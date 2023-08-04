@@ -41,7 +41,11 @@ parser.add_argument('--optimized', type=bool, default=False, help='Whether to us
 args = parser.parse_args()
 
 # Use the arguments in your script
-optimized = args.optimized
+if args.optimized is not None:
+    optimized = args.optimized
+else:
+    optimized = False
+print(f"Optimized: {optimized}")
 
 def write_current_params(params):
     with open('current_params.json', 'w') as f:
