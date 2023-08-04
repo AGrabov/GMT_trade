@@ -75,8 +75,8 @@ def start_bot():
     global bot_process
     try:
         # Run your live_trading.py script 
-        bot_process = subprocess.Popen([".venv\\Scripts\\python.exe", "live_trading.py"])
-        # bot_process = subprocess.Popen([".venv/bin/python", "live_trading.py"])
+        # bot_process = subprocess.Popen([".venv\\Scripts\\python.exe", "live_trading.py"])
+        bot_process = subprocess.Popen(["gmt_01/bin/python", "live_trading.py"])
     except Exception as e:
         # Handle exceptions here
         print(f"An error occurred: {e}")
@@ -126,8 +126,8 @@ async def run_optimizer_in_background_async(update: Update, context: ContextType
     # Run your main.py script with use_optimization flag and dates
     
     command = [
-    ".venv\\Scripts\\python.exe",
-    # ".venv/bin/python",  
+    # ".venv\\Scripts\\python.exe",
+    "gmt_01/bin/python",  
     "main.py", 
     "--use_optimization", 
     "True", 
@@ -209,8 +209,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Run your live_trading.py script with the best parameters
         command = [
-        ".venv\\Scripts\\python.exe",
-        # ".venv/bin/python", 
+        # ".venv\\Scripts\\python.exe",
+        "gmt_01/bin/python", 
         "live_trading.py", 
         "--optimized", 
         "True"
