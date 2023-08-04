@@ -36,7 +36,7 @@ notifier = TGnotify.TG_Notifier(tg_bot_api, tg_chat_id)
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Run live trading with the optimized "best_params".')
-parser.add_argument('--optimized', type=bool, default=False, help='Whether to use optimized parameters')
+optimized = parser.add_argument('--optimized', type=bool, default=False, help='Whether to use optimized parameters')
 
 def write_current_params(params):
     with open('current_params.json', 'w') as f:
