@@ -27,7 +27,7 @@ base_currency = 'USDT'
 symbol = target_coin + base_currency
 timeframe = bt.TimeFrame.Minutes
 compression = 5  # For live trading, you typically want to use smaller timeframes
-optimized = False
+# optimized = False
 
 # Notifier
 tg_chat_id = api_config.TG_BOT_ID
