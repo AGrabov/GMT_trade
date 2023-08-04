@@ -168,7 +168,7 @@ cerebro.addanalyzer(trade_list, _name='trade_list')
 # absolute dir the script is in
 script_dir = os.path.dirname(__file__)
 abs_file_path = os.path.join(script_dir, '../params.json')
-with open('.\params.json', 'r') as f:
+with open('./params.json', 'r') as f:
     params = json.load(f)
 
 # Create a CCXTStore and Data Feed
