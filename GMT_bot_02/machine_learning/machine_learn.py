@@ -3,13 +3,13 @@ from stable_baselines3 import A2C
 from gym_env import TradingEnv
 
 # Create your environment
-env = gym.make('TradingEnv')
+env = gym.make('Humanoid-v4', TradingEnv)
 
 # Initialize agent
 model = A2C('MlpPolicy', env, verbose=1)
 
 # Train agent
-model.learn(total_timesteps=10000)
+model.learn(total_timesteps=100000)
 
 # Save the agent
 model.save("a2c_trading")

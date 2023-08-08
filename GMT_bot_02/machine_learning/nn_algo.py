@@ -1,4 +1,3 @@
-from sklearn.ensemble import RandomForestRegressor
 import tensorflow as tf
 import pandas as pd
 import numpy as np
@@ -36,8 +35,8 @@ scaled_df = pd.DataFrame(scaled_df, columns=df.columns, index=df.index)
 
 # Split the data into training and testing sets
 # Let's say you want to use the last 1000 rows for testing
-train_data = scaled_df.iloc[:-50000]
-test_data = scaled_df.iloc[-50000:]
+train_data = scaled_df.iloc[:-10000]
+test_data = scaled_df.iloc[-10000:]
 
 def create_sequences(data, seq_length):
     xs = []
@@ -55,11 +54,35 @@ seq_length = 60  # Choose sequence length
 X_train, y_train = create_sequences(train_data, seq_length)
 X_test, y_test = create_sequences(test_data, seq_length)
 
+
 # Define the model
-model = RandomForestRegressor(n_estimators=100)
+model = tf.keras.models.Sequential([
+  tf.keras.layers.LSTM(64, activation='relu', return_sequences=True,input_shape=(X_train.shape[1], X_train.shape[2])), 
+  tf.keras.layers.LSTM(32, activation='relu', return_sequences=False),
+  tf.keras.layers.Dense(1)
+])
+
+# Compile the model
+model.compile(optimizer='RMSprop', loss='mean_squared_error', metrics=['mae', 'mse'])
+
+# Define callbacks
+early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10)
+model_checkpoint = tf.keras.callbacks.ModelCheckpoint('model_checkpoint.h5', save_best_only=True)
 
 # Train the model
-model.fit(X_train, y_train)
+model.fit(X_train, y_train, epochs=100, validation_split=0.2, callbacks=[early_stopping, model_checkpoint])
 
 # Use the trained model to make predictions in your trading strategy
 predictions = model.predict(X_test)
+
+# Evaluate the model
+loss, mae, mse = model.evaluate(X_test, y_test, verbose=2)
+print(f'Test set Mean Abs Error: {mae}\nTest set Mean Squared Error: {mse}')
+
+# Save the entire model for future use
+model.save('final_model.h5')
+
+# Load the model for future use
+# loaded_model = tf.keras.models.load_model('final_model.h5')
+
+
