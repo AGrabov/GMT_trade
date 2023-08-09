@@ -35,8 +35,8 @@ scaled_df = pd.DataFrame(scaled_df, columns=df.columns, index=df.index)
 
 # Split the data into training and testing sets
 # Let's say you want to use the last 1000 rows for testing
-train_data = scaled_df.iloc[:-10000]
-test_data = scaled_df.iloc[-10000:]
+train_data = scaled_df.iloc[:-50000]
+test_data = scaled_df.iloc[-50000:]
 
 def create_sequences(data, seq_length):
     xs = []
