@@ -76,9 +76,17 @@ class TradingEnv(gym.Env):
         self.current_state = state
 
     def reset(self):
-        # Reset to the most recent data point
-        self.current_step = len(self.data_buffer) - 1
+        # Ensure the data_buffer is not empty
+        if not self.data_buffer:
+            raise ValueError("Data buffer is empty. Ensure it's populated before calling reset.")
+
+        # Ensure current_step is a valid index
+        if self.current_step >= len(self.data_buffer) or self.current_step < 0:
+            self.current_step = len(self.data_buffer) - 1  # Set to the last index if out of bounds
+
         return list(self.data_buffer)[self.current_step]  # Convert deque to list for indexing
+
+
  
     def render(self, mode='human'):
         logging.info(f'Step: {self.current_step}, Portfolio Value: {np.sum(self.portfolio * self.df.iloc[self.current_step].values[:len(self.portfolio)])}')
