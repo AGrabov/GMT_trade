@@ -22,7 +22,7 @@ class A2CPredictor(bt.Indicator):
         })
 
         # Initialize the environment with the actual data
-        self.env = TradingEnv(data_df)
+        self.env = TradingEnv(initial_data=data_df)
 
         self.observation = self.env.reset()
 
@@ -36,6 +36,8 @@ class A2CPredictor(bt.Indicator):
         # Predict the action using the model
         action, _ = self.model.predict(self.observation)
         
+        # Update the observation by taking a step in the environment
+        self.observation, _, _, _ = self.env.step(action)
+        
         # Set the prediction line
         self.lines.prediction[0] = action
-
