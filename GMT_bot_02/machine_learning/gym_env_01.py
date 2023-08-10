@@ -1,3 +1,4 @@
+from ast import If
 import logging
 import numpy as np
 import pandas as pd
@@ -19,11 +20,15 @@ class TradingEnv(gym.Env):
         # Ensure df is a DataFrame
         if not isinstance(initial_data, pd.DataFrame):
             raise ValueError("Expected df to be a pandas DataFrame")
-
+                
         # Normalize prices
         self.df = initial_data / initial_data.max()
         self.transaction_cost = transaction_cost
         self.current_step = 0  # Initialize current_step
+
+        print(f'Dataframe: \n{self.df.head()} \n Dataframe length: {len(self.df)}')
+
+
 
         # Define action and observation space
         num_columns = len(initial_data.columns)
@@ -34,7 +39,7 @@ class TradingEnv(gym.Env):
         self.portfolio = np.zeros(num_columns // 2)
 
         # Initialize the data buffer with initial data
-        self.data_buffer = deque(initial_data.values, maxlen=max_buffer_size)    
+        self.data_buffer = deque(initial_data.values, maxlen=max_buffer_size)
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
