@@ -21,10 +21,12 @@ class A2CPredictor(bt.Indicator):
             'volume': self.data.volume.get(size=self.data.buflen())
         })
 
+        print(data_df.head())
+        
         # Initialize the environment with the actual data
         self.env = TradingEnv(initial_data=data_df)
-
-        self.observation = self.env.reset()
+        
+        self.observation = self.env.reset() if len(data_df) != 0 else None
 
     def next(self):
         # Get the current state from the data feed
