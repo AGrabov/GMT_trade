@@ -138,7 +138,7 @@ class TradingEnv(gym.Env):
         # If not in live mode and at the end of the buffer, set done to True
         if not self.live and self.current_step >= len(self.data_buffer) - 1:
             done = True
-            return self.data_buffer[self.current_step], 0, done, {}  # Return the last state, zero reward, and done
+            return self.data_buffer[self.current_step], -1000, done, {}  # Return the last state with significant negative reward
 
         self.current_step += 1
         next_state = self.data_buffer[self.current_step]
@@ -151,21 +151,27 @@ class TradingEnv(gym.Env):
                 self.portfolio[i] -= transaction_value + (transaction_value * self.transaction_cost)
                 self.buy_price[i] = current_prices[i]
                 self.trades.append((self.current_step, 'buy'))
+                print(f'BUY: {self.buy_price[i]}')
             elif act == 2:  # Close Long Position
                 profit_or_loss = current_prices[i] - self.buy_price[i]
                 self.portfolio[i] += profit_or_loss - (profit_or_loss * self.transaction_cost)
                 self.buy_price[i] = 0
                 self.trades.append((self.current_step, 'close_long'))
+                print(f'CLOSE LONG: {self.buy_price[i]}')
             elif act == 3:  # Go Short (Sell)
                 transaction_value = current_prices[i]
                 self.portfolio[i] += transaction_value - (transaction_value * self.transaction_cost)
                 self.short_price[i] = current_prices[i]
                 self.trades.append((self.current_step, 'sell'))
+                print(f'SELL: {self.short_price[i]}')
             elif act == 4:  # Close Short Position
                 profit_or_loss = self.short_price[i] - current_prices[i]
                 self.portfolio[i] -= profit_or_loss + (profit_or_loss * self.transaction_cost)
                 self.short_price[i] = 0
                 self.trades.append((self.current_step, 'close_short'))
+                print(f'CLOSE SHORT: {self.short_price[i]}')
+            elif act == 0:  # Do Nothing
+                pass
 
         # Calculate portfolio value
         portfolio_value = np.sum(self.portfolio * current_prices)
@@ -182,7 +188,10 @@ class TradingEnv(gym.Env):
         # Return the current observation
         obs = self.df.iloc[self.current_step].values
 
-        return next_state, reward, done, {}
+        return obs, reward, done, info
+    
+    def update_current_state(self, state):
+        self.current_state = state
 
     def reset(self):
         # Reset the current step to the beginning
