@@ -18,26 +18,19 @@ class TradingEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=1000, live=False) -> None:
+    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=1000.0, live=False) -> None:
         super(TradingEnv, self).__init__()
 
         self.live = live
-        self.cash = cash
-
+        self.money = cash
+        
         # Ensure df is a DataFrame
         if not isinstance(initial_data, pd.DataFrame):
             raise ValueError("Expected df to be a pandas DataFrame")                       
         
         self.df = self._calculate_indicators(initial_data)
 
-        print(f'Dataframe: \n{self.df.head()} \n Dataframe length: {len(self.df)}') 
-
-        if self.df.isna().any().any():
-            print("Warning: NaN values detected in the dataframe. Filling NaN values with the previous value.")
-            # Handle NaN values
-            self.df.fillna(method='ffill', inplace=True)
-            self.df.fillna(method='bfill', inplace=True)
-            self.df.fillna(0, inplace=True)
+        print(f'Dataframe and indicators: \n{self.df.head(10)} \n Dataframe length: {len(self.df)}')        
                 
         # Normalize values
         self.df = self.df / self.df.max(axis=0)
@@ -46,13 +39,12 @@ class TradingEnv(gym.Env):
         
         self.num_columns = len(initial_data.columns) // 2
         self.action_space = spaces.MultiDiscrete([5] * self.num_columns)
-        self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns),))
-        self.portfolio = np.zeros(self.num_columns)  # This will now represent the quantity of each asset
+        self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns),))        
         self.buy_price = np.zeros(self.num_columns)
         self.short_price = np.zeros(self.num_columns)  
 
         if self.df.isna().any().any():
-            print("Warning: NaN values detected in the normalized dataframe.\n Filling NaN values with the previous value.")
+            print("Warning: NaN values detected in the normalized data!\n Filling NaN values with various methods.")
             # Handle NaN values
             self.df.fillna(method='ffill', inplace=True)
             self.df.fillna(method='bfill', inplace=True)
@@ -61,15 +53,20 @@ class TradingEnv(gym.Env):
         # Initialize the data buffer with initial data
         self.data_buffer = deque(self.df.values, maxlen=max_buffer_size)
 
-        self.prev_portfolio_value = np.sum(self.portfolio * self.df.iloc[0].values[:len(self.portfolio)])
-        self.portfolio_values = [self.prev_portfolio_value]  # To store portfolio values over time for rendering
+        # Initialize portfolio and portfolio_value
+        self.portfolio = 0.0  # Represents quantity of the asset
+        self.cash = self.money
+        self.portfolio_value = self.cash
+
+        # Initialize prev_portfolio_value and portfolio_values
+        self.prev_portfolio_value = self.cash
+        self.portfolio_values = [self.cash]
         
         # For tracking trades
         self.trades = []
 
         self.long_position_open = False
         self.short_position_open = False
-
 
         # For real-time plotting
         self.fig, self.ax = plt.subplots()
@@ -86,11 +83,11 @@ class TradingEnv(gym.Env):
         df['HA_High'] = df[['high', 'HA_Open', 'HA_Close']].max(axis=1)
         df['HA_Low'] = df[['low', 'HA_Open', 'HA_Close']].min(axis=1)
 
-        # Calculate Weighted Close Price
-        df['WCLPRICE'] = talib.WCLPRICE(df['high'], df['low'], df['close'])
+        # # Calculate Weighted Close Price
+        # df['WCLPRICE'] = talib.WCLPRICE(df['high'], df['low'], df['close'])
 
-        # Calculate True Range
-        df['TRANGE'] = talib.TRANGE(df['high'], df['low'], df['close'])
+        # # Calculate True Range
+        # df['TRANGE'] = talib.TRANGE(df['high'], df['low'], df['close'])
 
         # Calculate Kaufman Adaptive Moving Average
         df['KAMA'] = talib.KAMA(df['close'], timeperiod=30)
@@ -142,6 +139,7 @@ class TradingEnv(gym.Env):
         # Handle NaN values
         df.fillna(method='ffill', inplace=True)
         df.fillna(method='bfill', inplace=True)
+        df.fillna(0, inplace=True)
 
         return df
 
@@ -202,20 +200,38 @@ class TradingEnv(gym.Env):
                     self.trades.append((self.current_step, 'close_short'))
                     self.short_position_open = False
 
+            elif act == 0:  # Do nothing
+                pass
+
         # Calculate portfolio value
-        asset_value = self.portfolio * current_prices
+        asset_value = self.portfolio * current_prices[0]  # Using index 0 since it's a single asset
         portfolio_value = asset_value + self.cash
 
         # Calculate reward as the difference in portfolio value from the previous step
-        reward = portfolio_value - self.prev_portfolio_value
+        reward = float(portfolio_value - self.prev_portfolio_value)  # Ensure reward is a scalar
         self.prev_portfolio_value = portfolio_value
         self.portfolio_values.append(portfolio_value)
+
+        # Calculate drawdown
+        peak = np.maximum.accumulate(self.portfolio_values)
+        drawdown = (peak - portfolio_value) / peak
+
+        # Calculate SQN
+        rewards_array = np.array(self.portfolio_values[1:]) - np.array(self.portfolio_values[:-1])
+        sqn = np.mean(rewards_array) / np.std(rewards_array) * np.sqrt(len(rewards_array))
+
+        # Calculate number of winning trades
+        winning_trades = len([r for r in rewards_array if r > 0])
 
         obs = self.df.iloc[self.current_step].values
 
         done = self.current_step >= len(self.df) - 1
 
-        info = {}
+        info = {
+            'drawdown': drawdown,
+            'sqn': sqn,
+            'winning_trades': winning_trades
+        }
 
         return obs, reward, done, info
 
@@ -241,20 +257,24 @@ class TradingEnv(gym.Env):
         # Reset the current step to the beginning
         self.current_step = 0
 
-        # Reset portfolio and prices
-        self.portfolio = np.zeros(self.num_columns)
+        # Reset prices
         self.buy_price = np.zeros(self.num_columns)
         self.short_price = np.zeros(self.num_columns)
 
+        # Reset portfolio and portfolio_value
+        self.portfolio = 0.0
+        self.cash = self.money
+        self.portfolio_value = self.cash
 
-        # Reset previous portfolio value
-        self.prev_portfolio_value = np.sum(self.portfolio * self.df.iloc[0].values[:len(self.portfolio)])
-        
-        # Reset the list storing portfolio values over time
-        self.portfolio_values = [self.prev_portfolio_value]
+        # Reset prev_portfolio_value and portfolio_values
+        self.prev_portfolio_value = self.cash
+        self.portfolio_values = [self.cash]
 
         # Clear trades for a new episode
         self.trades = []
+
+        # Reset the data buffer
+        self.data_buffer = []
 
         self.long_position_open = False
         self.short_position_open = False
