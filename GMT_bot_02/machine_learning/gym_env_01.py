@@ -17,8 +17,10 @@ class TradingEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005) -> None:
+    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, live=False) -> None:
         super(TradingEnv, self).__init__()
+
+        self.live = live
 
         # Ensure df is a DataFrame
         if not isinstance(initial_data, pd.DataFrame):
@@ -31,17 +33,14 @@ class TradingEnv(gym.Env):
         self.transaction_cost = transaction_cost
         self.current_step = 0  # Initialize current_step
         
-        # Define action and observation space
-        num_columns = len(initial_data.columns) // 2  # Assuming you have OHLC for each asset
-        self.action_space = spaces.MultiDiscrete([5] * num_columns)
+        self.num_columns = len(initial_data.columns) // 2
+        self.action_space = spaces.MultiDiscrete([5] * self.num_columns)
         self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns),))
+        self.portfolio = np.zeros(self.num_columns)
+        self.buy_price = np.zeros(self.num_columns)
+        self.short_price = np.zeros(self.num_columns)
 
-        print(f'Dataframe: \n{self.df.head()} \n Dataframe length: {len(self.df)}')
-
-        # Portfolio holds the quantity of each stock
-        self.portfolio = np.zeros(num_columns // 2)
-        self.buy_price = np.zeros(num_columns // 2)
-        self.short_price = np.zeros(num_columns // 2)
+        print(f'Dataframe: \n{self.df.head()} \n Dataframe length: {len(self.df)}')      
 
         # Initialize the data buffer with initial data
         self.data_buffer = deque(self.df.values, maxlen=max_buffer_size)
@@ -131,9 +130,15 @@ class TradingEnv(gym.Env):
         return [seed]
 
     def step(self, action: np.array) -> tuple:
-        # Wait for new data if at the end of the buffer
-        while self.current_step >= len(self.data_buffer) - 1:
-            time.sleep(1)  # Sleep for 1 second, or adjust as needed
+        # If in live mode and at the end of the buffer, wait for new data
+        if self.live:
+            while self.current_step >= len(self.data_buffer) - 1:
+                time.sleep(1)  # Sleep for 1 second, or adjust as needed
+
+        # If not in live mode and at the end of the buffer, set done to True
+        if not self.live and self.current_step >= len(self.data_buffer) - 1:
+            done = True
+            return self.data_buffer[self.current_step], 0, done, {}  # Return the last state, zero reward, and done
 
         self.current_step += 1
         next_state = self.data_buffer[self.current_step]
@@ -184,9 +189,10 @@ class TradingEnv(gym.Env):
         self.current_step = 0
 
         # Reset portfolio and prices
-        self.portfolio = np.zeros(len(self.df.columns) // 2)
-        self.buy_price = np.zeros(len(self.df.columns) // 2)
-        self.short_price = np.zeros(len(self.df.columns) // 2)
+        self.portfolio = np.zeros(self.num_columns)
+        self.buy_price = np.zeros(self.num_columns)
+        self.short_price = np.zeros(self.num_columns)
+
 
         # Reset previous portfolio value
         self.prev_portfolio_value = np.sum(self.portfolio * self.df.iloc[0].values[:len(self.portfolio)])
