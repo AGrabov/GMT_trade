@@ -8,6 +8,7 @@ from collections import deque
 import time
 import matplotlib.pyplot as plt
 import mplfinance as mpf
+from pandas import isna
 import talib
 
 
@@ -27,27 +28,41 @@ class TradingEnv(gym.Env):
             raise ValueError("Expected df to be a pandas DataFrame")                       
         
         self.df = self._calculate_indicators(initial_data)
+
+        print(f'Dataframe: \n{self.df.head()} \n Dataframe length: {len(self.df)}') 
+
+        if self.df.isna().any().any():
+            print("Warning: NaN values detected in the dataframe. Filling NaN values with the previous value.")
+            # Handle NaN values
+            self.df.fillna(method='ffill', inplace=True)
+            self.df.fillna(method='bfill', inplace=True)
+            self.df.fillna(0, inplace=True)
                 
         # Normalize values
         self.df = self.df / self.df.max(axis=0)
         self.transaction_cost = transaction_cost
-        self.current_step = 0  # Initialize current_step
+        self.current_step = 0  # Initialize current_step      
         
         self.num_columns = len(initial_data.columns) // 2
         self.action_space = spaces.MultiDiscrete([5] * self.num_columns)
         self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns),))
         self.portfolio = np.zeros(self.num_columns)
         self.buy_price = np.zeros(self.num_columns)
-        self.short_price = np.zeros(self.num_columns)
+        self.short_price = np.zeros(self.num_columns)  
 
-        print(f'Dataframe: \n{self.df.head()} \n Dataframe length: {len(self.df)}')      
+        if self.df.isna().any().any():
+            print("Warning: NaN values detected in the normalized dataframe.\n Filling NaN values with the previous value.")
+            # Handle NaN values
+            self.df.fillna(method='ffill', inplace=True)
+            self.df.fillna(method='bfill', inplace=True)
+            self.df.fillna(0, inplace=True)
 
         # Initialize the data buffer with initial data
         self.data_buffer = deque(self.df.values, maxlen=max_buffer_size)
 
         self.prev_portfolio_value = np.sum(self.portfolio * self.df.iloc[0].values[:len(self.portfolio)])
         self.portfolio_values = [self.prev_portfolio_value]  # To store portfolio values over time for rendering
-
+        
         # For tracking trades
         self.trades = []
 
@@ -141,7 +156,7 @@ class TradingEnv(gym.Env):
             return self.data_buffer[self.current_step], -1000, done, {}  # Return the last state with significant negative reward
 
         self.current_step += 1
-        next_state = self.data_buffer[self.current_step]
+        obs = self.df.iloc[self.current_step].values
 
         # Update portfolio
         current_prices = self.df.iloc[self.current_step].values[:len(self.portfolio)]
@@ -151,26 +166,22 @@ class TradingEnv(gym.Env):
                 self.portfolio[i] -= transaction_value + (transaction_value * self.transaction_cost)
                 self.buy_price[i] = current_prices[i]
                 self.trades.append((self.current_step, 'buy'))
-                print(f'BUY: {self.buy_price[i]}')
             elif act == 2:  # Close Long Position
                 profit_or_loss = current_prices[i] - self.buy_price[i]
                 self.portfolio[i] += profit_or_loss - (profit_or_loss * self.transaction_cost)
                 self.buy_price[i] = 0
                 self.trades.append((self.current_step, 'close_long'))
-                print(f'CLOSE LONG: {self.buy_price[i]}')
             elif act == 3:  # Go Short (Sell)
                 transaction_value = current_prices[i]
                 self.portfolio[i] += transaction_value - (transaction_value * self.transaction_cost)
                 self.short_price[i] = current_prices[i]
                 self.trades.append((self.current_step, 'sell'))
-                print(f'SELL: {self.short_price[i]}')
             elif act == 4:  # Close Short Position
                 profit_or_loss = self.short_price[i] - current_prices[i]
                 self.portfolio[i] -= profit_or_loss + (profit_or_loss * self.transaction_cost)
                 self.short_price[i] = 0
                 self.trades.append((self.current_step, 'close_short'))
-                print(f'CLOSE SHORT: {self.short_price[i]}')
-            elif act == 0:  # Do Nothing
+            elif act == 0:  # Do Nothing (Hold)
                 pass
 
         # Calculate portfolio value
@@ -185,10 +196,8 @@ class TradingEnv(gym.Env):
 
         info = {}
 
-        # Return the current observation
-        obs = self.df.iloc[self.current_step].values
-
         return obs, reward, done, info
+
     
     def update_current_state(self, state):
         self.current_state = state
@@ -224,33 +233,33 @@ class TradingEnv(gym.Env):
     def render(self, mode='human'):
         logging.info(f'Step: {self.current_step}, Portfolio Value: {np.sum(self.portfolio * self.df.iloc[self.current_step].values[:len(self.portfolio)])}')
 
-        # Extract OHLC data up to the current step
-        ohlc_data = self.df.iloc[:self.current_step+1]
+        # # Extract OHLC data up to the current step
+        # ohlc_data = self.df.iloc[:self.current_step+1]
         
-        # Create a new figure and set of subplots
-        fig, axes = plt.subplots(nrows=2, ncols=1, gridspec_kw={'height_ratios': [3, 1]}, figsize=(10, 6))
+        # # Create a new figure and set of subplots
+        # fig, axes = plt.subplots(nrows=2, ncols=1, gridspec_kw={'height_ratios': [3, 1]}, figsize=(10, 6))
         
-        # Plot candlestick chart
-        mpf.plot(ohlc_data, type='candle', ax=axes[0], volume=axes[1], style='charles')
+        # # Plot candlestick chart
+        # mpf.plot(ohlc_data, type='candle', ax=axes[0], volume=axes[1], style='charles')
         
-        # Plot portfolio value on the same axis as the candlestick chart
-        axes[0].plot(self.portfolio_values, color='blue', label='Portfolio Value')
+        # # Plot portfolio value on the same axis as the candlestick chart
+        # axes[0].plot(self.portfolio_values, color='blue', label='Portfolio Value')
         
-        # Plot trades
-        for trade in self.trades:
-            y_value = self.portfolio_values[trade[0]]  # Get the portfolio value at the trade step
-            if trade[1] == 'buy':
-                axes[0].scatter(trade[0], y_value, color='green', marker='^', label='Buy')
-            elif trade[1] == 'sell':
-                axes[0].scatter(trade[0], y_value, color='red', marker='v', label='Sell')
-            elif trade[1] == 'close_long':
-                axes[0].scatter(trade[0], y_value, color='blue', marker='^', label='Close Long')
-            elif trade[1] == 'close_short':
-                axes[0].scatter(trade[0], y_value, color='orange', marker='v', label='Close Short')
+        # # Plot trades
+        # for trade in self.trades:
+        #     y_value = self.portfolio_values[trade[0]]  # Get the portfolio value at the trade step
+        #     if trade[1] == 'buy':
+        #         axes[0].scatter(trade[0], y_value, color='green', marker='^', label='Buy')
+        #     elif trade[1] == 'sell':
+        #         axes[0].scatter(trade[0], y_value, color='red', marker='v', label='Sell')
+        #     elif trade[1] == 'close_long':
+        #         axes[0].scatter(trade[0], y_value, color='blue', marker='^', label='Close Long')
+        #     elif trade[1] == 'close_short':
+        #         axes[0].scatter(trade[0], y_value, color='orange', marker='v', label='Close Short')
 
-        # To avoid duplicate labels in the legend
-        handles, labels = axes[0].get_legend_handles_labels()
-        unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
-        axes[0].legend(*zip(*unique))
+        # # To avoid duplicate labels in the legend
+        # handles, labels = axes[0].get_legend_handles_labels()
+        # unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
+        # axes[0].legend(*zip(*unique))
 
-        plt.pause(0.01)  # Pause to update the plot
+        # plt.pause(0.01)  # Pause to update the plot
