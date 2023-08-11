@@ -7,11 +7,16 @@ import pandas as pd
 
 class A2CPredictor(bt.Indicator):
     lines = ('prediction',)
+    params = dict(live = False,
+                  model_path="./models/a2c_trading_30m.zip"        
+    )
 
     def __init__(self):
         # Load the trained model
-        self.model = A2C.load("./models/a2c_trading_30m.zip")
-        
+        self.model = A2C.load(self.params.model_path)
+        self.initialized = False
+
+    def _initialize_env(self):
         # Convert the data to a DataFrame
         data_df = pd.DataFrame({
             'open': self.data.open.get(size=self.data.buflen()),
@@ -21,14 +26,24 @@ class A2CPredictor(bt.Indicator):
             'volume': self.data.volume.get(size=self.data.buflen())
         })
 
-        print(data_df.head())
-        
+        # Check if data is available
+        if data_df.empty:
+            return
+
         # Initialize the environment with the actual data
-        self.env = TradingEnv(initial_data=data_df)
-        
-        self.observation = self.env.reset() if len(data_df) != 0 else None
+        self.env = TradingEnv(initial_data=data_df, live=self.params.live)
+        self.observation = self.env.reset()
+        self.initialized = True
 
     def next(self):
+        # Initialize the environment if it's the first call to next
+        if not self.initialized:
+            self._initialize_env()
+
+            # If still not initialized, skip this iteration
+            if not self.initialized:
+                return
+
         # Get the current state from the data feed
         current_state = [self.data.open[0], self.data.high[0], self.data.low[0], self.data.close[0], self.data.volume[0]]
         
@@ -37,9 +52,10 @@ class A2CPredictor(bt.Indicator):
         
         # Predict the action using the model
         action, _ = self.model.predict(self.observation)
-        
-        # Update the observation by taking a step in the environment
-        self.observation, _, _, _ = self.env.step(action)
+
+        # print(action.shape)  # if action is a numpy array
+        # print(len(action))  # if action is a list
+
         
         # Set the prediction line
-        self.lines.prediction[0] = action
+        self.lines.prediction[0] = action[0]
