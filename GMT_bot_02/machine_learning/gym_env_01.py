@@ -156,7 +156,7 @@ class TradingEnv(gym.Env):
             return self.data_buffer[self.current_step], -1000, done, {}  # Return the last state with significant negative reward
 
         self.current_step += 1
-        obs = self.df.iloc[self.current_step].values
+        
 
         # Update portfolio
         current_prices = self.df.iloc[self.current_step].values[:len(self.portfolio)]
@@ -192,6 +192,8 @@ class TradingEnv(gym.Env):
         self.prev_portfolio_value = portfolio_value
         self.portfolio_values.append(portfolio_value)
 
+        obs = self.df.iloc[self.current_step].values
+
         done = self.current_step >= len(self.df) - 1
 
         info = {}
@@ -200,7 +202,12 @@ class TradingEnv(gym.Env):
 
     
     def update_current_state(self, state):
-        self.current_state = state
+        # Update the current state in the dataframe
+        self.df.iloc[self.current_step] = state
+        
+        # Optionally, if you're using a buffer and it needs to be updated:
+        self.data_buffer[self.current_step] = state
+
 
     def reset(self):
         # Reset the current step to the beginning
@@ -233,33 +240,33 @@ class TradingEnv(gym.Env):
     def render(self, mode='human'):
         logging.info(f'Step: {self.current_step}, Portfolio Value: {np.sum(self.portfolio * self.df.iloc[self.current_step].values[:len(self.portfolio)])}')
 
-        # # Extract OHLC data up to the current step
-        # ohlc_data = self.df.iloc[:self.current_step+1]
+        # Extract OHLC data up to the current step
+        ohlc_data = self.df.iloc[:self.current_step+1]
         
-        # # Create a new figure and set of subplots
-        # fig, axes = plt.subplots(nrows=2, ncols=1, gridspec_kw={'height_ratios': [3, 1]}, figsize=(10, 6))
+        # Create a new figure and set of subplots
+        fig, axes = plt.subplots(nrows=2, ncols=1, gridspec_kw={'height_ratios': [3, 1]}, figsize=(10, 6))
         
-        # # Plot candlestick chart
-        # mpf.plot(ohlc_data, type='candle', ax=axes[0], volume=axes[1], style='charles')
+        # Plot candlestick chart
+        mpf.plot(ohlc_data, type='candle', ax=axes[0], volume=axes[1], style='charles')
         
-        # # Plot portfolio value on the same axis as the candlestick chart
-        # axes[0].plot(self.portfolio_values, color='blue', label='Portfolio Value')
+        # Plot portfolio value on the same axis as the candlestick chart
+        axes[0].plot(self.portfolio_values, color='blue', label='Portfolio Value')
         
-        # # Plot trades
-        # for trade in self.trades:
-        #     y_value = self.portfolio_values[trade[0]]  # Get the portfolio value at the trade step
-        #     if trade[1] == 'buy':
-        #         axes[0].scatter(trade[0], y_value, color='green', marker='^', label='Buy')
-        #     elif trade[1] == 'sell':
-        #         axes[0].scatter(trade[0], y_value, color='red', marker='v', label='Sell')
-        #     elif trade[1] == 'close_long':
-        #         axes[0].scatter(trade[0], y_value, color='blue', marker='^', label='Close Long')
-        #     elif trade[1] == 'close_short':
-        #         axes[0].scatter(trade[0], y_value, color='orange', marker='v', label='Close Short')
+        # Plot trades
+        for trade in self.trades:
+            y_value = self.portfolio_values[trade[0]]  # Get the portfolio value at the trade step
+            if trade[1] == 'buy':
+                axes[0].scatter(trade[0], y_value, color='green', marker='^', label='Buy')
+            elif trade[1] == 'sell':
+                axes[0].scatter(trade[0], y_value, color='red', marker='v', label='Sell')
+            elif trade[1] == 'close_long':
+                axes[0].scatter(trade[0], y_value, color='blue', marker='^', label='Close Long')
+            elif trade[1] == 'close_short':
+                axes[0].scatter(trade[0], y_value, color='orange', marker='v', label='Close Short')
 
-        # # To avoid duplicate labels in the legend
-        # handles, labels = axes[0].get_legend_handles_labels()
-        # unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
-        # axes[0].legend(*zip(*unique))
+        # To avoid duplicate labels in the legend
+        handles, labels = axes[0].get_legend_handles_labels()
+        unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
+        axes[0].legend(*zip(*unique))
 
-        # plt.pause(0.01)  # Pause to update the plot
+        plt.pause(0.01)  # Pause to update the plot
