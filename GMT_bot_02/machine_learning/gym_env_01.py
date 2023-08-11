@@ -18,10 +18,11 @@ class TradingEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, live=False) -> None:
+    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=1000, live=False) -> None:
         super(TradingEnv, self).__init__()
 
         self.live = live
+        self.cash = cash
 
         # Ensure df is a DataFrame
         if not isinstance(initial_data, pd.DataFrame):
@@ -46,7 +47,7 @@ class TradingEnv(gym.Env):
         self.num_columns = len(initial_data.columns) // 2
         self.action_space = spaces.MultiDiscrete([5] * self.num_columns)
         self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns),))
-        self.portfolio = np.zeros(self.num_columns)
+        self.portfolio = np.zeros(self.num_columns)  # This will now represent the quantity of each asset
         self.buy_price = np.zeros(self.num_columns)
         self.short_price = np.zeros(self.num_columns)  
 
@@ -65,6 +66,10 @@ class TradingEnv(gym.Env):
         
         # For tracking trades
         self.trades = []
+
+        self.long_position_open = False
+        self.short_position_open = False
+
 
         # For real-time plotting
         self.fig, self.ax = plt.subplots()
@@ -161,31 +166,45 @@ class TradingEnv(gym.Env):
         # Update portfolio
         current_prices = self.df.iloc[self.current_step].values[:len(self.portfolio)]
         for i, act in enumerate(action):
-            if act == 1:  # Go Long (Buy)
-                transaction_value = current_prices[i]
-                self.portfolio[i] -= transaction_value + (transaction_value * self.transaction_cost)
-                self.buy_price[i] = current_prices[i]
-                self.trades.append((self.current_step, 'buy'))
-            elif act == 2:  # Close Long Position
-                profit_or_loss = current_prices[i] - self.buy_price[i]
-                self.portfolio[i] += profit_or_loss - (profit_or_loss * self.transaction_cost)
-                self.buy_price[i] = 0
-                self.trades.append((self.current_step, 'close_long'))
-            elif act == 3:  # Go Short (Sell)
-                transaction_value = current_prices[i]
-                self.portfolio[i] += transaction_value - (transaction_value * self.transaction_cost)
-                self.short_price[i] = current_prices[i]
-                self.trades.append((self.current_step, 'sell'))
-            elif act == 4:  # Close Short Position
-                profit_or_loss = self.short_price[i] - current_prices[i]
-                self.portfolio[i] -= profit_or_loss + (profit_or_loss * self.transaction_cost)
-                self.short_price[i] = 0
-                self.trades.append((self.current_step, 'close_short'))
-            elif act == 0:  # Do Nothing (Hold)
-                pass
+            if not self.long_position_open and not self.short_position_open:  # No trade is currently open
+                if act == 1:  # Go Long (Buy)
+                    quantity = self.cash * 0.9 / current_prices[i]
+                    transaction_cost = quantity * current_prices[i] * self.transaction_cost
+                    if self.cash >= transaction_cost:
+                        self.cash -= (quantity * current_prices[i] + transaction_cost)
+                        self.portfolio[i] += quantity
+                        self.buy_price[i] = current_prices[i]
+                        self.trades.append((self.current_step, 'buy'))
+                        self.long_position_open = True
+                elif act == 3:  # Go Short (Sell)
+                    quantity = self.cash * 0.9 / current_prices[i]
+                    transaction_cost = quantity * current_prices[i] * self.transaction_cost
+                    if self.cash >= transaction_cost:
+                        self.cash -= transaction_cost
+                        self.portfolio[i] -= quantity
+                        self.short_price[i] = current_prices[i]
+                        self.trades.append((self.current_step, 'sell'))
+                        self.short_position_open = True
+            elif self.long_position_open:  # There's an open long position for this asset
+                if act == 2:  # Close Long Position
+                    profit_or_loss = self.portfolio[i] * (current_prices[i] - self.buy_price[i])
+                    self.cash += (self.portfolio[i] * current_prices[i] + profit_or_loss - profit_or_loss * self.transaction_cost)
+                    self.portfolio[i] = 0
+                    self.buy_price[i] = 0
+                    self.trades.append((self.current_step, 'close_long'))
+                    self.long_position_open = False
+            elif self.short_position_open:  # There's an open short position for this asset
+                if act == 4:  # Close Short Position
+                    profit_or_loss = self.portfolio[i] * (self.short_price[i] - current_prices[i])
+                    self.cash += (-self.portfolio[i] * current_prices[i] + profit_or_loss - profit_or_loss * self.transaction_cost)
+                    self.portfolio[i] = 0
+                    self.short_price[i] = 0
+                    self.trades.append((self.current_step, 'close_short'))
+                    self.short_position_open = False
 
         # Calculate portfolio value
-        portfolio_value = np.sum(self.portfolio * current_prices)
+        asset_value = self.portfolio * current_prices
+        portfolio_value = asset_value + self.cash
 
         # Calculate reward as the difference in portfolio value from the previous step
         reward = portfolio_value - self.prev_portfolio_value
@@ -205,8 +224,17 @@ class TradingEnv(gym.Env):
         # Update the current state in the dataframe
         self.df.iloc[self.current_step] = state
         
-        # Optionally, if you're using a buffer and it needs to be updated:
-        self.data_buffer[self.current_step] = state
+        # Calculate indicators for the new data
+        self.df = self._calculate_indicators(self.df)
+                
+        # Normalize the data
+        max_values = self.df.max(axis=0)
+        self.df = self.df / max_values
+
+        # Handle NaN values
+        self.df.fillna(method='ffill', inplace=True)
+        self.df.fillna(method='bfill', inplace=True)
+        self.df.fillna(0, inplace=True)
 
 
     def reset(self):
@@ -227,6 +255,9 @@ class TradingEnv(gym.Env):
 
         # Clear trades for a new episode
         self.trades = []
+
+        self.long_position_open = False
+        self.short_position_open = False
 
         # Clear the plot for a new episode
         self.ax.clear()
