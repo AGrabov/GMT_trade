@@ -22,21 +22,15 @@ class TradingEnv(gym.Env):
 
         # Ensure df is a DataFrame
         if not isinstance(initial_data, pd.DataFrame):
-            raise ValueError("Expected df to be a pandas DataFrame")
-                
-        self.df = initial_data
+            raise ValueError("Expected df to be a pandas DataFrame")                       
         
-        self.df = self._calculate_indicators(self.df)
+        self.df = self._calculate_indicators(initial_data)
                 
         # Normalize values
         self.df = self.df / self.df.max(axis=0)
         self.transaction_cost = transaction_cost
-        self.current_step = 0  # Initialize current_step        
+        self.current_step = 0  # Initialize current_step
         
-        # Handle NaN values
-        self.df.fillna(method='ffill', inplace=True)
-        self.df.fillna(method='bfill', inplace=True)
-
         # Define action and observation space
         num_columns = len(initial_data.columns) // 2  # Assuming you have OHLC for each asset
         self.action_space = spaces.MultiDiscrete([5] * num_columns)
@@ -83,9 +77,9 @@ class TradingEnv(gym.Env):
         df['KAMA'] = talib.KAMA(df['close'], timeperiod=30)
 
         # Calculate MESA Adaptive Moving Average         
-        mama = talib.MAMA(df['close'], fastlimit=0.5, slowlimit=0.05)
-        df['MAMA'] = mama.mama
-        df['FAMA'] = mama.fama
+        mama, fama = talib.MAMA(df['close'], fastlimit=0.5, slowlimit=0.05)
+        df['MAMA'] = mama
+        df['FAMA'] = fama
 
         # Calculate Absolute Price Oscillator
         df['APO'] = talib.APO(df['close'], fastperiod=3, slowperiod=10, matype=3)
@@ -109,7 +103,7 @@ class TradingEnv(gym.Env):
         df['HA_TSF'] = talib.TSF(df['HA_Close'], timeperiod=14)
 
         # Calculate On Balance Volume for Heikin Ashi close
-        df['HA_OBV'] = talib.OBV(price=df['HA_Close'], prices=df['volume'])
+        df['HA_OBV'] = talib.OBV(df['HA_Close'], df['volume'])
 
         # Calculate Variance
         df['VAR'] = talib.VAR(df['close'], timeperiod=5, nbdev=1)
