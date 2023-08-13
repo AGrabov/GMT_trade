@@ -12,7 +12,8 @@ from pandas import isna
 import talib
 
 
-logger = logging.getLogger(__file__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class TradingEnv(gym.Env):
     """Custom Environment that follows gym interface"""
@@ -50,11 +51,14 @@ class TradingEnv(gym.Env):
             self.df.fillna(method='bfill', inplace=True)
             self.df.fillna(0, inplace=True)
 
+        # Store the initial data
+        self.initial_data = initial_data.copy()
+
         # Initialize the data buffer with initial data
-        self.data_buffer = deque(self.df.values, maxlen=max_buffer_size)
+        self.data_buffer = deque(self.initial_data.values, maxlen=max_buffer_size)
 
         # Initialize portfolio and portfolio_value
-        self.portfolio = 0.0  # Represents quantity of the asset
+        self.portfolio = np.zeros(self.num_columns)  # Represents quantity of each asset
         self.cash = self.money
         self.portfolio_value = self.cash
 
@@ -67,6 +71,11 @@ class TradingEnv(gym.Env):
 
         self.long_position_open = False
         self.short_position_open = False
+
+        # Initialize a cooldown counter
+        self.cooldown_counter = 0
+        self.cooldown_period = 3  # Number of steps to wait after a trade
+
 
         # For real-time plotting
         self.fig, self.ax = plt.subplots()
@@ -83,43 +92,44 @@ class TradingEnv(gym.Env):
         df['HA_High'] = df[['high', 'HA_Open', 'HA_Close']].max(axis=1)
         df['HA_Low'] = df[['low', 'HA_Open', 'HA_Close']].min(axis=1)
 
-        # # Calculate Weighted Close Price
-        # df['WCLPRICE'] = talib.WCLPRICE(df['high'], df['low'], df['close'])
+        ha_diff = df['HA_Close'] - df['HA_Open']
+        df['HA_Diff'] = talib.MA(ha_diff, timeperiod=5, matype=0)
 
-        # # Calculate True Range
-        # df['TRANGE'] = talib.TRANGE(df['high'], df['low'], df['close'])
+        # Calculate Moving Average
+        df['MA'] = talib.MA(df['close'], timeperiod=50, matype=0)            
 
-        # Calculate Kaufman Adaptive Moving Average
-        df['KAMA'] = talib.KAMA(df['close'], timeperiod=30)
+        # Calculate Moving Average Convergence Divergence
+        df['MACD'], df['MACDSIGNAL'], df['MACDHIST'] = talib.MACDEXT(df['close'], 
+                                                                     fastperiod=12, fastmatype=2,
+                                                                     slowperiod=26, slowmatype=1, 
+                                                                     signalperiod=9, signalmatype=8)
+
+        # Calculate Bollinger Bands
+        df['BB_UPPER'], df['BB_MIDDLE'], df['BB_LOWER'] = talib.BBANDS(df['close'], 
+                                                                       timeperiod=20, nbdevup=2, 
+                                                                       nbdevdn=2, matype=0)
+        
+        # Calculate Moving Average with variable period
+        df['DEMA'] = talib.DEMA(df['close'], timeperiod=25)
 
         # Calculate MESA Adaptive Moving Average         
-        mama, fama = talib.MAMA(df['close'], fastlimit=0.5, slowlimit=0.05)
-        df['MAMA'] = mama
-        df['FAMA'] = fama
-
+        df['MAMA'], df['FAMA'] = talib.MAMA(df['close'], fastlimit=0.5, slowlimit=0.05)
+        
         # Calculate Absolute Price Oscillator
-        df['APO'] = talib.APO(df['close'], fastperiod=3, slowperiod=10, matype=3)
-
-        # Calculate Percentage Price Oscillator for Haikin Ashi close
-        df['PPO'] = talib.PPO(df['HA_Close'], fastperiod=12, slowperiod=26, matype=7)
+        df['APO'] = talib.APO(df['close'], fastperiod=3, slowperiod=13, matype=2)
 
         # Calculate Chande Momentum Oscillator
-        df['CMO'] = talib.CMO(df['close'], timeperiod=14)        
+        df['CMO'] = talib.CMO(df['close'], timeperiod=14)
 
         # Calculate Chaikin A/D Oscillator
         df['ADOSC'] = talib.ADOSC(df['high'], df['low'], df['close'], df['volume'], fastperiod=3, slowperiod=10)
 
-        # Calculate Money Flow Index
-        df['MFI'] = talib.MFI(df['high'], df['low'], df['close'], df['volume'], timeperiod=14)
-
         # Calculate Normalized Average True Range
-        df['NATR'] = talib.NATR(df['high'], df['low'], df['close'], timeperiod=14)
+        df['NATR'] = talib.NATR(df['high'], df['low'], df['close'], timeperiod=13)
 
-        # Calculate Time Series Forecast for Heikin Ashi close
-        df['HA_TSF'] = talib.TSF(df['HA_Close'], timeperiod=14)
+        df['ST_RSI_K'], df['ST_RSI_D'] = talib.STOCHRSI(df['close'], timeperiod=14, fastk_period=5, fastd_period=3, fastd_matype=1)
 
-        # Calculate On Balance Volume for Heikin Ashi close
-        df['HA_OBV'] = talib.OBV(df['HA_Close'], df['volume'])
+        df['CORREL'] = talib.CORREL(df['high'], df['low'], timeperiod=15)
 
         # Calculate Variance
         df['VAR'] = talib.VAR(df['close'], timeperiod=5, nbdev=1)
@@ -128,12 +138,8 @@ class TradingEnv(gym.Env):
         df['HT_TRENDLINE'] = talib.HT_TRENDLINE(df['close']) # Instantaneous Trendline        
         df['HT_DCPERIOD'] = talib.HT_DCPERIOD(df['close']) # Dominant Cycle Period        
         df['HT_DCPHASE'] = talib.HT_DCPHASE(df['close']) # Dominant Cycle Phase        
-        inphase, quadrature = talib.HT_PHASOR(df['close']) # Dominant Cycle Inphase
-        df['HT_INPHASE'] = inphase
-        df['HT_QUADRATURE'] = quadrature        
-        sine, leadsine = talib.HT_SINE(df['close']) # Dominant Cycle Sine
-        df['HT_SINE'] = sine
-        df['HT_LEAD_SINE'] = leadsine        
+        df['HT_INPHASE'], df['HT_QUADRATURE'] = talib.HT_PHASOR(df['close']) # Dominant Cycle Inphase        
+        df['HT_SINE'], df['HT_LEAD_SINE'] = talib.HT_SINE(df['close']) # Dominant Cycle Sine        
         df['HT_TRENDMODE'] = talib.HT_TRENDMODE(df['close']) # Trend Mode
 
         # Handle NaN values
@@ -158,31 +164,53 @@ class TradingEnv(gym.Env):
             done = True
             return self.data_buffer[self.current_step], -1000, done, {}  # Return the last state with significant negative reward
 
+        reward = 0
+        done = False
         self.current_step += 1
-        
+
+        # if self.cooldown_counter > 0:
+        #     self.cooldown_counter -= 1
+        #     return obs, 0, done, info  # Return a reward of 0 during cooldown
+
+        # Assign portfolio_value to the previous value before updating the portfolio
+        portfolio_value = self.prev_portfolio_value
+
 
         # Update portfolio
-        current_prices = self.df.iloc[self.current_step].values[:len(self.portfolio)]
-        for i, act in enumerate(action):
+        current_prices = np.array([self.df.iloc[self.current_step]['close']])
+        print("Shape of current_prices:", current_prices.shape)
+
+        # if len(action) != len(current_prices):
+        #     raise ValueError("Mismatch between action and current_prices lengths")
+        
+        # If action is a list or array, extract the first element
+        if isinstance(action, (list, np.ndarray)):
+            action = action[0]
+
+        for i, act in enumerate(action[:len(current_prices)]):
             if not self.long_position_open and not self.short_position_open:  # No trade is currently open
                 if act == 1:  # Go Long (Buy)
                     quantity = self.cash * 0.9 / current_prices[i]
-                    transaction_cost = quantity * current_prices[i] * self.transaction_cost
-                    if self.cash >= transaction_cost:
-                        self.cash -= (quantity * current_prices[i] + transaction_cost)
-                        self.portfolio[i] += quantity
-                        self.buy_price[i] = current_prices[i]
-                        self.trades.append((self.current_step, 'buy'))
-                        self.long_position_open = True
+                    transaction_fee = quantity * current_prices[i] * self.transaction_cost                    
+                    self.cash -= (quantity * current_prices[i] + transaction_fee)
+                    self.portfolio[i] += quantity
+                    self.buy_price[i] = current_prices[i]
+                    self.trades.append((self.current_step, 'buy'))
+                    self.long_position_open = True
+                    logger.info(f"Step {self.current_step}: Opening Long position (Buy) at price {current_prices[i]}")
                 elif act == 3:  # Go Short (Sell)
                     quantity = self.cash * 0.9 / current_prices[i]
-                    transaction_cost = quantity * current_prices[i] * self.transaction_cost
-                    if self.cash >= transaction_cost:
-                        self.cash -= transaction_cost
-                        self.portfolio[i] -= quantity
-                        self.short_price[i] = current_prices[i]
-                        self.trades.append((self.current_step, 'sell'))
-                        self.short_position_open = True
+                    transaction_fee = quantity * current_prices[i] * self.transaction_cost                    
+                    self.cash -= transaction_fee
+                    self.portfolio[i] -= quantity
+                    self.short_price[i] = current_prices[i]
+                    self.trades.append((self.current_step, 'sell'))
+                    self.short_position_open = True
+                    logger.info(f"Step {self.current_step}: Opening Short position (Sell) at price {current_prices[i]}")
+                elif act == 2 or act == 4:  # Incorrect action
+                    reward -= 0.05 * portfolio_value  # Penalty for wrong actions
+                    logger.info(f"Step {self.current_step}: Incorrect action")
+             
             elif self.long_position_open:  # There's an open long position for this asset
                 if act == 2:  # Close Long Position
                     profit_or_loss = self.portfolio[i] * (current_prices[i] - self.buy_price[i])
@@ -191,6 +219,10 @@ class TradingEnv(gym.Env):
                     self.buy_price[i] = 0
                     self.trades.append((self.current_step, 'close_long'))
                     self.long_position_open = False
+                    logger.info(f"Step {self.current_step}: Closing Long Position at price {current_prices[i]}\n Profit/loss: {profit_or_loss}")
+                elif act == 3 or act == 4 or act == 1:  # Incorrect action
+                    reward -= 0.05 * portfolio_value  # Penalty for incorrect action
+                    logger.info(f"Step {self.current_step}: Incorrect action")
             elif self.short_position_open:  # There's an open short position for this asset
                 if act == 4:  # Close Short Position
                     profit_or_loss = self.portfolio[i] * (self.short_price[i] - current_prices[i])
@@ -199,38 +231,93 @@ class TradingEnv(gym.Env):
                     self.short_price[i] = 0
                     self.trades.append((self.current_step, 'close_short'))
                     self.short_position_open = False
-
+                    logger.info(f"Step {self.current_step}: Closing Short Position at price {current_prices[i]}\n Profit/loss: {profit_or_loss}")
+                elif act == 1 or act == 2 or act == 3:  # Incorrect action
+                    reward -= 0.05 * portfolio_value  # Penalty for incorrect action
+                    logger.info(f"Step {self.current_step}: Incorrect action")
+           
             elif act == 0:  # Do nothing
+                logger.info(f"Step {self.current_step}: Hold")
                 pass
 
+        # if act in [1, 2, 3, 4]:  # If any trade action is taken
+        #     self.cooldown_counter = self.cooldown_period
+
+
         # Calculate portfolio value
-        asset_value = self.portfolio * current_prices[0]  # Using index 0 since it's a single asset
+        asset_value = np.sum(self.portfolio * current_prices)
         portfolio_value = asset_value + self.cash
 
         # Calculate reward as the difference in portfolio value from the previous step
-        reward = float(portfolio_value - self.prev_portfolio_value)  # Ensure reward is a scalar
+        reward = 0.1 * (portfolio_value - self.prev_portfolio_value)  # Normalize the reward
         self.prev_portfolio_value = portfolio_value
         self.portfolio_values.append(portfolio_value)
 
         # Calculate drawdown
         peak = np.maximum.accumulate(self.portfolio_values)
         drawdown = (peak - portfolio_value) / peak
+        if (drawdown > 0.2).any():  # End episode if drawdown exceeds 20%            
+            reward -= 0.1 * portfolio_value  # Heavy penalty for large drawdown
+            # logger.info(f"Step {self.current_step}: Penalizing for large drawdown")
+        elif (drawdown > 0.3).all():  # Penalize for large drawdown
+            reward -= 0.3 * portfolio_value
+            # logger.info(f"Step {self.current_step}: Ending episode due to large drawdown")
+            done = True
 
+        
         # Calculate SQN
         rewards_array = np.array(self.portfolio_values[1:]) - np.array(self.portfolio_values[:-1])
         sqn = np.mean(rewards_array) / np.std(rewards_array) * np.sqrt(len(rewards_array))
 
+        # Calculate Sharpe Ratio
+        sharpe_ratio = np.mean(rewards_array) / np.std(rewards_array)
+
+        total_trades = len([r for r in rewards_array])
+
+        # Calculate number of losing trades
+        losing_trades = len([r for r in rewards_array if r < 0])
+
         # Calculate number of winning trades
         winning_trades = len([r for r in rewards_array if r > 0])
 
-        obs = self.df.iloc[self.current_step].values
+        # Calculate winning percentage
+        win_percentage = winning_trades / total_trades * 100
 
-        done = self.current_step >= len(self.df) - 1
+        # Reward for winning trades
+        reward += (winning_trades / total_trades) * 0.1 * self.portfolio_value
+
+        # Penalize for losing trades
+        reward -= (losing_trades / total_trades) * 0.1 * self.portfolio_value
+
+        # if total_trades > 5:
+        #     logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
+        #                 f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
+        #                 f"Portfolio value: {portfolio_value}")            
+
+        # Penalize for low SQN
+        reward += (sqn - 1.5) * 0.15 * self.portfolio_value
+
+        # Penalize for fast closing trades
+        if self.long_position_open or self.short_position_open:
+            time_since_last_trade = self.current_step - self.trades[-1][0]
+            if time_since_last_trade < 3:
+                reward -= 0.01 * portfolio_value
+                logger.info(f"Step {self.current_step}: Penalizing for fast closing trades")
+
+        # Reward for stable good metrics
+        reward += 0.02 * (sharpe_ratio + sqn) * portfolio_value  # Emphasize stable metrics over cash size
+
+        obs = self.df.iloc[self.current_step].values
+        done = done or self.current_step >= len(self.df) - 1
 
         info = {
             'drawdown': drawdown,
             'sqn': sqn,
-            'winning_trades': winning_trades
+            'total_trades': total_trades,
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'win_percentage': win_percentage,            
+            'sharpe_ratio': sharpe_ratio
         }
 
         return obs, reward, done, info
@@ -238,7 +325,7 @@ class TradingEnv(gym.Env):
     
     def update_current_state(self, state):
         # Update the current state in the dataframe
-        self.df.iloc[self.current_step] = state
+        self.df.loc[self.current_step, ['open', 'high', 'low', 'close', 'volume']] = state
         
         # Calculate indicators for the new data
         self.df = self._calculate_indicators(self.df)
@@ -262,7 +349,7 @@ class TradingEnv(gym.Env):
         self.short_price = np.zeros(self.num_columns)
 
         # Reset portfolio and portfolio_value
-        self.portfolio = 0.0
+        self.portfolio = np.zeros(self.num_columns)
         self.cash = self.money
         self.portfolio_value = self.cash
 
@@ -273,8 +360,8 @@ class TradingEnv(gym.Env):
         # Clear trades for a new episode
         self.trades = []
 
-        # Reset the data buffer
-        self.data_buffer = []
+        # Reset the data buffer with the initial data
+        self.data_buffer = deque(self.initial_data.values, maxlen=self.data_buffer.maxlen)
 
         self.long_position_open = False
         self.short_position_open = False
@@ -284,6 +371,8 @@ class TradingEnv(gym.Env):
         self.ax.set_title('Portfolio Value Over Time')
         self.ax.set_xlabel('Time Step')
         self.ax.set_ylabel('Portfolio Value')
+
+        logger.info(f'Resetting the environment')
 
         # Return the initial state
         return self.df.iloc[self.current_step].values
