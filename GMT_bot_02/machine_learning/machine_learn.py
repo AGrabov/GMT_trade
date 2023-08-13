@@ -1,5 +1,6 @@
 import gym
 from stable_baselines3 import A2C
+from optuna import Trial, create_study
 from gym_env_01 import TradingEnv
 import pandas as pd
 import datetime as dt
@@ -19,6 +20,33 @@ timeframe =  'Minutes' # 'Hours' #
 compression = 30
 binance_timeframe = f'{compression}m'
 
+
+
+def objective(trial: Trial):
+    learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
+    gamma = trial.suggest_float("gamma", 0.9, 0.9999)
+    ent_coef = trial.suggest_float("ent_coef", 1e-5, 1e-1, log=True)
+    
+    env = TradingEnv(df, live=False)
+    model = A2C('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, ent_coef=ent_coef)
+    
+    # You might want to use a smaller number of timesteps for faster trials
+    model.learn(total_timesteps=len(df)*5, progress_bar=True)
+    
+    # Evaluate the trained model on a validation set and return the performance
+    # For simplicity, we'll use the same env for validation
+    obs = env.reset()
+    total_reward = 0
+    for _ in range(1000):
+        action, _states = model.predict(obs)
+        obs, reward, done, info = env.step(action)
+        total_reward += reward
+        if done:
+            obs = env.reset()
+    
+    return total_reward
+
+
 # Fetch the data for the specified symbol and time range
 df = BinanceFuturesData.fetch_data(symbol=symbol, startdate=start_date, enddate=end_date, binance_timeframe=binance_timeframe)
 
@@ -28,22 +56,25 @@ print(df.head(3))
 print()
 print(f'Number of timesteps in the fteched data: {len(df)}')
 
-# Create an instance of the custom trading environment
-env = TradingEnv(df, live=False)
+study = create_study(direction="maximize")
+study.optimize(objective, n_trials=100)
 
-# Initialize agent with a smaller learning rate
-model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.01)  # Adjusted learning rate
+# # Create an instance of the custom trading environment
+# env = TradingEnv(df, live=False)
 
-# Train agent
-model.learn(total_timesteps=len(df)*20, progress_bar=True)
+# # Initialize agent with a smaller learning rate
+# model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.01)  # Adjusted learning rate
 
-# Save the agent
-model.save(f"./models/a2c_trading_{symbol}_{binance_timeframe}")
+# # Train agent
+# model.learn(total_timesteps=len(df)*20, progress_bar=True)
 
-# To use the trained agent
-obs = env.reset()
-for i in range(1000):
-    action, _states = model.predict(obs)
-    obs, rewards, done, info = env.step(action)
-    if done:
-        obs = env.reset()
+# # Save the agent
+# model.save(f"./models/a2c_trading_{symbol}_{binance_timeframe}")
+
+# # To use the trained agent
+# obs = env.reset()
+# for i in range(1000):
+    # action, _states = model.predict(obs)
+    # obs, rewards, done, info = env.step(action)
+    # if done:
+    #     obs = env.reset()

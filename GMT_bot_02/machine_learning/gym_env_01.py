@@ -8,48 +8,42 @@ from collections import deque
 import time
 import matplotlib.pyplot as plt
 import mplfinance as mpf
-from pandas import isna
 import talib
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 class TradingEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=1000.0, live=False) -> None:
+    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=1000.0, live=False, observation_window_length=10) -> None:
         super(TradingEnv, self).__init__()
 
         self.live = live
         self.money = cash
-        
+        self.observation_window_length = observation_window_length
+
         # Ensure df is a DataFrame
         if not isinstance(initial_data, pd.DataFrame):
-            raise ValueError("Expected df to be a pandas DataFrame")                       
-        
-        self.df = self._calculate_indicators(initial_data)
+            raise ValueError("Expected df to be a pandas DataFrame")
 
-        print(f'Dataframe and indicators: \n{self.df.head(10)} \n Dataframe length: {len(self.df)}')        
-                
+        self.df = self._calculate_indicators(initial_data)
+        print(f'Dataframe and indicators: \n{self.df.head(10)} \n Dataframe length: {len(self.df)}')
+
         # Normalize values
         self.df = self.df / self.df.max(axis=0)
         self.transaction_cost = transaction_cost
-        self.current_step = 0  # Initialize current_step      
-        
+        self.current_step = 0  # Initialize current_step
+
         self.num_columns = len(initial_data.columns) // 2
         self.action_space = spaces.MultiDiscrete([5] * self.num_columns)
-        self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns),))        
+        self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns) * self.observation_window_length,))
         self.buy_price = np.zeros(self.num_columns)
-        self.short_price = np.zeros(self.num_columns)  
+        self.short_price = np.zeros(self.num_columns)
 
-        if self.df.isna().any().any():
-            print("Warning: NaN values detected in the normalized data!\n Filling NaN values with various methods.")
-            # Handle NaN values
-            self.df.fillna(method='ffill', inplace=True)
-            self.df.fillna(method='bfill', inplace=True)
-            self.df.fillna(0, inplace=True)
+        self._handle_nan_values()
 
         # Store the initial data
         self.initial_data = initial_data.copy()
@@ -65,7 +59,7 @@ class TradingEnv(gym.Env):
         # Initialize prev_portfolio_value and portfolio_values
         self.prev_portfolio_value = self.cash
         self.portfolio_values = [self.cash]
-        
+
         # For tracking trades
         self.trades = []
 
@@ -76,15 +70,24 @@ class TradingEnv(gym.Env):
         self.cooldown_counter = 0
         self.cooldown_period = 3  # Number of steps to wait after a trade
 
-
         # For real-time plotting
         self.fig, self.ax = plt.subplots()
         self.ax.set_title('Portfolio Value Over Time')
         self.ax.set_xlabel('Time Step')
         self.ax.set_ylabel('Portfolio Value')
 
+    def _handle_nan_values(self, df=None):
+        if df is None:
+            df = self.df
+
+        if df.isna().any().any():
+            print("Warning: NaN values detected in the normalized data!\n Filling NaN values with various methods.")
+            df.fillna(method='ffill', inplace=True)
+            df.fillna(method='bfill', inplace=True)
+            df.fillna(0, inplace=True)
+
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate indicators"""    
+        """Calculate indicators"""
 
         # Calculate Heikin Ashi candlesticks
         df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
@@ -142,18 +145,16 @@ class TradingEnv(gym.Env):
         df['HT_SINE'], df['HT_LEAD_SINE'] = talib.HT_SINE(df['close']) # Dominant Cycle Sine        
         df['HT_TRENDMODE'] = talib.HT_TRENDMODE(df['close']) # Trend Mode
 
-        # Handle NaN values
-        df.fillna(method='ffill', inplace=True)
-        df.fillna(method='bfill', inplace=True)
-        df.fillna(0, inplace=True)
-
+        self._handle_nan_values(df)
         return df
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
-
+    
     def step(self, action: np.array) -> tuple:
+        # Ensure action is an array
+        action = np.array(action)    
         # If in live mode and at the end of the buffer, wait for new data
         if self.live:
             while self.current_step >= len(self.data_buffer) - 1:
@@ -320,24 +321,38 @@ class TradingEnv(gym.Env):
             'sharpe_ratio': sharpe_ratio
         }
 
-        return obs, reward, done, info
+        return self.df.iloc[self.current_step:self.current_step+self.observation_window_length].values.flatten(), reward, done, info
 
     
-    def update_current_state(self, state):
-        # Update the current state in the dataframe
-        self.df.loc[self.current_step, ['open', 'high', 'low', 'close', 'volume']] = state
+    def update_current_state(self, new_data):
+        """
+        Update the dataframe with new data and recalculate indicators.
         
-        # Calculate indicators for the new data
+        Parameters:
+        - new_data: A list or array containing the new data [open, high, low, close, volume].
+        """
+        # Define the columns
+        columns = ['open', 'high', 'low', 'close', 'volume']
+        
+        # Convert new_data to a dataframe and specify columns
+        new_df = pd.DataFrame([new_data], columns=columns, index=[self.df.index[-1] + pd.Timedelta(minutes=self.timeframe)])
+        
+        # Append new data to the dataframe
+        self.df = pd.concat([self.df, new_df], axis=0)
+        
+        # Calculate indicators for the updated dataframe
         self.df = self._calculate_indicators(self.df)
-                
+        
+        # Ensure the dataframe length doesn't exceed the observation window length
+        if len(self.df) > self.observation_window_length:
+            self.df = self.df.iloc[-self.observation_window_length:]
+            
         # Normalize the data
         max_values = self.df.max(axis=0)
         self.df = self.df / max_values
 
         # Handle NaN values
-        self.df.fillna(method='ffill', inplace=True)
-        self.df.fillna(method='bfill', inplace=True)
-        self.df.fillna(0, inplace=True)
+        self._handle_nan_values()
 
 
     def reset(self):
@@ -375,7 +390,7 @@ class TradingEnv(gym.Env):
         logger.info(f'Resetting the environment')
 
         # Return the initial state
-        return self.df.iloc[self.current_step].values
+        return self.df.iloc[self.current_step:self.current_step+self.observation_window_length].values.flatten()
 
     def render(self, mode='human'):
         logging.info(f'Step: {self.current_step}, Portfolio Value: {np.sum(self.portfolio * self.df.iloc[self.current_step].values[:len(self.portfolio)])}')
