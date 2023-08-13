@@ -289,10 +289,10 @@ class TradingEnv(gym.Env):
         # Penalize for losing trades
         reward -= (losing_trades / total_trades) * 0.1 * self.portfolio_value
 
-        # if total_trades > 5:
-        #     logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
-        #                 f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
-        #                 f"Portfolio value: {portfolio_value}")            
+        if total_trades > 5:
+            logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
+                        f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
+                        f"Portfolio value: {portfolio_value}")            
 
         # Penalize for low SQN
         reward += (sqn - 1.5) * 0.15 * self.portfolio_value
