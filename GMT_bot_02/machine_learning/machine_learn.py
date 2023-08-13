@@ -1,6 +1,6 @@
 import gym
 from stable_baselines3 import A2C
-from gym_env import TradingEnv
+from gym_env_01 import TradingEnv
 import pandas as pd
 import datetime as dt
 from data_feed_01 import BinanceFuturesData
@@ -23,22 +23,22 @@ binance_timeframe = f'{compression}m'
 df = BinanceFuturesData.fetch_data(symbol=symbol, startdate=start_date, enddate=end_date, binance_timeframe=binance_timeframe)
 
 # Print the dataframe's top few rows
-print(df.head())
-
+print('Fteching data...')
+print(df.head(3))
+print()
+print(f'Number of timesteps in the fteched data: {len(df)}')
 
 # Create an instance of the custom trading environment
-env = TradingEnv(df)
+env = TradingEnv(df, live=False)
 
-# Initialize agent
-model = A2C('MlpPolicy', env, verbose=1)
-
-print(f'Number of timesteps: {len(df)}')
+# Initialize agent with a smaller learning rate
+model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.01)  # Adjusted learning rate
 
 # Train agent
 model.learn(total_timesteps=len(df)*20, progress_bar=True)
 
 # Save the agent
-model.save(f"./models/a2c_trading_{binance_timeframe}")
+model.save(f"./models/a2c_trading_{symbol}_{binance_timeframe}")
 
 # To use the trained agent
 obs = env.reset()
