@@ -88,7 +88,11 @@ class TradingEnv(gym.Env):
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate indicators"""
-
+    
+        # Ensure df is not None or empty
+        if df is None or df.empty:
+            raise ValueError("Invalid dataframe provided for indicator calculation.")
+    
         # Calculate Heikin Ashi candlesticks
         df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
         df['HA_Open'] = (df['open'].shift(1) + df['close'].shift(1)) / 2
@@ -152,9 +156,15 @@ class TradingEnv(gym.Env):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
     
-    def step(self, action: np.array) -> tuple:
-        # Ensure action is an array
-        action = np.array(action)    
+    def step(self, action):
+        # Ensure action is an array or list
+        if not isinstance(action, (list, np.ndarray)):
+            raise ValueError(f"Expected action to be a list or numpy array, but got {type(action)} instead.")
+
+        # If action is a scalar, convert to list
+        if np.isscalar(action):
+            action = [action]
+
         # If in live mode and at the end of the buffer, wait for new data
         if self.live:
             while self.current_step >= len(self.data_buffer) - 1:
@@ -178,15 +188,12 @@ class TradingEnv(gym.Env):
 
 
         # Update portfolio
-        current_prices = np.array([self.df.iloc[self.current_step]['close']])
-        print("Shape of current_prices:", current_prices.shape)
+        current_prices = np.array([self.df.iloc[self.current_step]['close']])        
+        if not isinstance(current_prices, (list, np.ndarray)):
+            raise ValueError(f"Expected current_prices to be a list or numpy array, but got {type(current_prices)} instead.")
 
-        # if len(action) != len(current_prices):
-        #     raise ValueError("Mismatch between action and current_prices lengths")
-        
-        # If action is a list or array, extract the first element
-        if isinstance(action, (list, np.ndarray)):
-            action = action[0]
+        print("Shape of current_prices:", current_prices.shape)
+      
 
         for i, act in enumerate(action[:len(current_prices)]):
             if not self.long_position_open and not self.short_position_open:  # No trade is currently open
@@ -259,10 +266,10 @@ class TradingEnv(gym.Env):
         drawdown = (peak - portfolio_value) / peak
         if (drawdown > 0.2).any():  # End episode if drawdown exceeds 20%            
             reward -= 0.1 * portfolio_value  # Heavy penalty for large drawdown
-            # logger.info(f"Step {self.current_step}: Penalizing for large drawdown")
+            logger.info(f"Step {self.current_step}: Penalizing for large drawdown")
         elif (drawdown > 0.3).all():  # Penalize for large drawdown
             reward -= 0.3 * portfolio_value
-            # logger.info(f"Step {self.current_step}: Ending episode due to large drawdown")
+            logger.info(f"Step {self.current_step}: Ending episode due to large drawdown")
             done = True
 
         
@@ -290,10 +297,10 @@ class TradingEnv(gym.Env):
         # Penalize for losing trades
         reward -= (losing_trades / total_trades) * 0.1 * self.portfolio_value
 
-        if total_trades > 5:
-            logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
-                        f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
-                        f"Portfolio value: {portfolio_value}")            
+        # if total_trades > 5:
+        #     logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
+        #                 f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
+        #                 f"Portfolio value: {portfolio_value}")            
 
         # Penalize for low SQN
         reward += (sqn - 1.5) * 0.15 * self.portfolio_value
@@ -308,7 +315,8 @@ class TradingEnv(gym.Env):
         # Reward for stable good metrics
         reward += 0.02 * (sharpe_ratio + sqn) * portfolio_value  # Emphasize stable metrics over cash size
 
-        obs = self.df.iloc[self.current_step].values
+        # obs = self.df.iloc[self.current_step].values
+        obs = self.df.iloc[self.current_step:self.current_step+self.observation_window_length].values.flatten()
         done = done or self.current_step >= len(self.df) - 1
 
         info = {
@@ -321,8 +329,8 @@ class TradingEnv(gym.Env):
             'sharpe_ratio': sharpe_ratio
         }
 
-        return self.df.iloc[self.current_step:self.current_step+self.observation_window_length].values.flatten(), reward, done, info
-
+        # return self.df.iloc[self.current_step:self.current_step+self.observation_window_length].values.flatten(), reward, done, info
+        return obs, reward, done, info
     
     def update_current_state(self, new_data):
         """
@@ -353,7 +361,6 @@ class TradingEnv(gym.Env):
 
         # Handle NaN values
         self._handle_nan_values()
-
 
     def reset(self):
         # Reset the current step to the beginning
