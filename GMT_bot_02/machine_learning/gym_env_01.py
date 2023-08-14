@@ -191,62 +191,62 @@ class TradingEnv(gym.Env):
         current_prices = np.array([self.df.iloc[self.current_step]['close']])        
         if not isinstance(current_prices, (list, np.ndarray)):
             raise ValueError(f"Expected current_prices to be a list or numpy array, but got {type(current_prices)} instead.")
-
+        
         print("Shape of current_prices:", current_prices.shape)
       
-
-        for i, act in enumerate(action[:len(current_prices)]):
-            if not self.long_position_open and not self.short_position_open:  # No trade is currently open
-                if act == 1:  # Go Long (Buy)
-                    quantity = self.cash * 0.9 / current_prices[i]
-                    transaction_fee = quantity * current_prices[i] * self.transaction_cost                    
-                    self.cash -= (quantity * current_prices[i] + transaction_fee)
-                    self.portfolio[i] += quantity
-                    self.buy_price[i] = current_prices[i]
-                    self.trades.append((self.current_step, 'buy'))
-                    self.long_position_open = True
-                    logger.info(f"Step {self.current_step}: Opening Long position (Buy) at price {current_prices[i]}")
-                elif act == 3:  # Go Short (Sell)
-                    quantity = self.cash * 0.9 / current_prices[i]
-                    transaction_fee = quantity * current_prices[i] * self.transaction_cost                    
-                    self.cash -= transaction_fee
-                    self.portfolio[i] -= quantity
-                    self.short_price[i] = current_prices[i]
-                    self.trades.append((self.current_step, 'sell'))
-                    self.short_position_open = True
-                    logger.info(f"Step {self.current_step}: Opening Short position (Sell) at price {current_prices[i]}")
-                elif act == 2 or act == 4:  # Incorrect action
-                    reward -= 0.05 * portfolio_value  # Penalty for wrong actions
-                    logger.info(f"Step {self.current_step}: Incorrect action")
+        act = action[0]
+        
+        if not self.long_position_open and not self.short_position_open:  # No trade is currently open
+            if act == 1:  # Go Long (Buy)
+                quantity = self.cash * 0.9 / current_prices[0]
+                transaction_fee = quantity * current_prices[0] * self.transaction_cost                    
+                self.cash -= (quantity * current_prices[0] + transaction_fee)
+                self.portfolio[0] += quantity
+                self.buy_price[0] = current_prices[0]
+                self.trades.append((self.current_step, 'buy'))
+                self.long_position_open = True
+                logger.info(f"Step {self.current_step}: Opening Long position (Buy) at price {current_prices[0]}")
+            elif act == 3:  # Go Short (Sell)
+                quantity = self.cash * 0.9 / current_prices[0]
+                transaction_fee = quantity * current_prices[0] * self.transaction_cost                    
+                self.cash -= transaction_fee
+                self.portfolio[0] -= quantity
+                self.short_price[0] = current_prices[0]
+                self.trades.append((self.current_step, 'sell'))
+                self.short_position_open = True
+                logger.info(f"Step {self.current_step}: Opening Short position (Sell) at price {current_prices[0]}")
+            elif act == 2 or act == 4:  # Incorrect action
+                reward -= 0.05 * portfolio_value  # Penalty for wrong actions
+                logger.info(f"Step {self.current_step}: Incorrect action")
              
-            elif self.long_position_open:  # There's an open long position for this asset
-                if act == 2:  # Close Long Position
-                    profit_or_loss = self.portfolio[i] * (current_prices[i] - self.buy_price[i])
-                    self.cash += (self.portfolio[i] * current_prices[i] + profit_or_loss - profit_or_loss * self.transaction_cost)
-                    self.portfolio[i] = 0
-                    self.buy_price[i] = 0
-                    self.trades.append((self.current_step, 'close_long'))
-                    self.long_position_open = False
-                    logger.info(f"Step {self.current_step}: Closing Long Position at price {current_prices[i]}\n Profit/loss: {profit_or_loss}")
-                elif act == 3 or act == 4 or act == 1:  # Incorrect action
-                    reward -= 0.05 * portfolio_value  # Penalty for incorrect action
-                    logger.info(f"Step {self.current_step}: Incorrect action")
-            elif self.short_position_open:  # There's an open short position for this asset
-                if act == 4:  # Close Short Position
-                    profit_or_loss = self.portfolio[i] * (self.short_price[i] - current_prices[i])
-                    self.cash += (-self.portfolio[i] * current_prices[i] + profit_or_loss - profit_or_loss * self.transaction_cost)
-                    self.portfolio[i] = 0
-                    self.short_price[i] = 0
-                    self.trades.append((self.current_step, 'close_short'))
-                    self.short_position_open = False
-                    logger.info(f"Step {self.current_step}: Closing Short Position at price {current_prices[i]}\n Profit/loss: {profit_or_loss}")
-                elif act == 1 or act == 2 or act == 3:  # Incorrect action
-                    reward -= 0.05 * portfolio_value  # Penalty for incorrect action
-                    logger.info(f"Step {self.current_step}: Incorrect action")
+        elif self.long_position_open:  # There's an open long position for this asset
+            if act == 2:  # Close Long Position
+                profit_or_loss = self.portfolio[0] * (current_prices[0] - self.buy_price[0])
+                self.cash += (self.portfolio[0] * current_prices[0] + profit_or_loss - profit_or_loss * self.transaction_cost)
+                self.portfolio[0] = 0
+                self.buy_price[0] = 0
+                self.trades.append((self.current_step, 'close_long'))
+                self.long_position_open = False
+                logger.info(f"Step {self.current_step}: Closing Long Position at price {current_prices[0]}\n Profit/loss: {profit_or_loss}")
+            elif act == 3 or act == 4 or act == 1:  # Incorrect action
+                reward -= 0.05 * portfolio_value  # Penalty for incorrect action
+                logger.info(f"Step {self.current_step}: Incorrect action")
+        elif self.short_position_open:  # There's an open short position for this asset
+            if act == 4:  # Close Short Position
+                profit_or_loss = self.portfolio[0] * (self.short_price[0] - current_prices[0])
+                self.cash += (-self.portfolio[0] * current_prices[0] + profit_or_loss - profit_or_loss * self.transaction_cost)
+                self.portfolio[0] = 0
+                self.short_price[0] = 0
+                self.trades.append((self.current_step, 'close_short'))
+                self.short_position_open = False
+                logger.info(f"Step {self.current_step}: Closing Short Position at price {current_prices[0]}\n Profit/loss: {profit_or_loss}")
+            elif act == 1 or act == 2 or act == 3:  # Incorrect action
+                reward -= 0.05 * portfolio_value  # Penalty for incorrect action
+                logger.info(f"Step {self.current_step}: Incorrect action")
            
-            elif act == 0:  # Do nothing
-                logger.info(f"Step {self.current_step}: Hold")
-                pass
+        elif act == 0:  # Do nothing
+            logger.info(f"Step {self.current_step}: Hold")
+            pass
 
         # if act in [1, 2, 3, 4]:  # If any trade action is taken
         #     self.cooldown_counter = self.cooldown_period
