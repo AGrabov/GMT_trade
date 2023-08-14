@@ -22,33 +22,41 @@ binance_timeframe = f'{compression}m'
 
 
 
-def objective(trial: Trial):
-    learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
-    gamma = trial.suggest_float("gamma", 0.9, 0.9999)
-    ent_coef = trial.suggest_float("ent_coef", 1e-5, 1e-1, log=True)
+# def objective(trial: Trial):
+#     global df  # Declare df as a global variable
+
+#     learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
+#     gamma = trial.suggest_float("gamma", 0.9, 0.9999)
+#     ent_coef = trial.suggest_float("ent_coef", 1e-5, 1e-1, log=True)
     
-    env = TradingEnv(df, live=False)
-    model = A2C('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, ent_coef=ent_coef)
+#     env = TradingEnv(df, live=False)
+#     model = A2C('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, ent_coef=ent_coef)
     
-    # You might want to use a smaller number of timesteps for faster trials
-    model.learn(total_timesteps=len(df)*5, progress_bar=True)
+#     # You might want to use a smaller number of timesteps for faster trials
+#     model.learn(total_timesteps=len(df)*5, progress_bar=True)
     
-    # Evaluate the trained model on a validation set and return the performance
-    # For simplicity, we'll use the same env for validation
-    obs = env.reset()
-    total_reward = 0
-    for _ in range(1000):
-        action, _states = model.predict(obs)
-        obs, reward, done, info = env.step(action)
-        total_reward += reward
-        if done:
-            obs = env.reset()
+#     # Evaluate the trained model on a validation set and return the performance
+#     # For simplicity, we'll use the same env for validation
+#     obs = env.reset()
+#     total_reward = 0
+#     for _ in range(1000):
+#         action, _states = model.predict(obs)
+#         obs, reward, done, info = env.step(action)
+#         total_reward += reward
+#         if done:
+#             obs = env.reset()
     
-    return total_reward
+#     return total_reward
+
 
 
 # Fetch the data for the specified symbol and time range
 df = BinanceFuturesData.fetch_data(symbol=symbol, startdate=start_date, enddate=end_date, binance_timeframe=binance_timeframe)
+
+# Check if the dataframe is valid and not empty
+if df is None or df.empty:
+    raise ValueError("Failed to fetch data or the data is empty.")
+
 
 # Print the dataframe's top few rows
 print('Fteching data...')
@@ -56,25 +64,25 @@ print(df.head(3))
 print()
 print(f'Number of timesteps in the fteched data: {len(df)}')
 
-study = create_study(direction="maximize")
-study.optimize(objective, n_trials=100)
+# study = create_study(direction="maximize")
+# study.optimize(objective, n_trials=100)
 
-# # Create an instance of the custom trading environment
-# env = TradingEnv(df, live=False)
+# Create an instance of the custom trading environment
+env = TradingEnv(df, live=False)
 
-# # Initialize agent with a smaller learning rate
-# model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.01)  # Adjusted learning rate
+# Initialize agent with a smaller learning rate
+model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.005, gamma=0.995, ent_coef=1e-5)  # Adjusted learning rate
 
-# # Train agent
-# model.learn(total_timesteps=len(df)*20, progress_bar=True)
+# Train agent
+model.learn(total_timesteps=len(df)*20, progress_bar=True)
 
-# # Save the agent
-# model.save(f"./models/a2c_trading_{symbol}_{binance_timeframe}")
+# Save the agent
+model.save(f"./models/a2c_trading_{symbol}_{binance_timeframe}")
 
-# # To use the trained agent
-# obs = env.reset()
-# for i in range(1000):
-    # action, _states = model.predict(obs)
-    # obs, rewards, done, info = env.step(action)
-    # if done:
-    #     obs = env.reset()
+# To use the trained agent
+obs = env.reset()
+for i in range(1000):
+    action, _states = model.predict(obs)
+    obs, rewards, done, info = env.step(action)
+    if done:
+        obs = env.reset()

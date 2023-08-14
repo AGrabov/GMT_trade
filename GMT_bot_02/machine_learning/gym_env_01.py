@@ -30,7 +30,7 @@ class TradingEnv(gym.Env):
             raise ValueError("Expected df to be a pandas DataFrame")
 
         self.df = self._calculate_indicators(initial_data)
-        print(f'Dataframe and indicators: \n{self.df.head(10)} \n Dataframe length: {len(self.df)}')
+        print(f'Dataframe and indicators: \n{self.df.head(5)} \n Dataframe length: {len(self.df)}')
 
         # Normalize values
         self.df = self.df / self.df.max(axis=0)
@@ -38,12 +38,12 @@ class TradingEnv(gym.Env):
         self.current_step = 0  # Initialize current_step
 
         self.num_columns = len(initial_data.columns) // 2
-        self.action_space = spaces.MultiDiscrete([5] * self.num_columns)
+        self.action_space = spaces.MultiDiscrete([5])  # Only one action for the 'close' column
         self.observation_space = spaces.Box(low=0, high=1, shape=(len(self.df.columns) * self.observation_window_length,))
         self.buy_price = np.zeros(self.num_columns)
         self.short_price = np.zeros(self.num_columns)
 
-        self._handle_nan_values()
+        self._handle_nan_values(self.df)
 
         # Store the initial data
         self.initial_data = initial_data.copy()
@@ -82,9 +82,9 @@ class TradingEnv(gym.Env):
 
         if df.isna().any().any():
             print("Warning: NaN values detected in the normalized data!\n Filling NaN values with various methods.")
-            df.fillna(method='ffill', inplace=True)
-            df.fillna(method='bfill', inplace=True)
-            df.fillna(0, inplace=True)
+        df.fillna(method='ffill', inplace=True)
+        df.fillna(method='bfill', inplace=True)
+        df.fillna(0, inplace=True)
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate indicators"""
@@ -192,9 +192,14 @@ class TradingEnv(gym.Env):
         if not isinstance(current_prices, (list, np.ndarray)):
             raise ValueError(f"Expected current_prices to be a list or numpy array, but got {type(current_prices)} instead.")
         
+        if current_prices.isna().any().any():
+            print("Warning: NaN values detected in the current_prices!\n Filling NaN values with various methods.")
+            self._handle_nan_values(current_prices)
+
+        
         print("Shape of current_prices:", current_prices.shape)
       
-        act = action[0]
+        act = action
         
         if not self.long_position_open and not self.short_position_open:  # No trade is currently open
             if act == 1:  # Go Long (Buy)
@@ -297,10 +302,10 @@ class TradingEnv(gym.Env):
         # Penalize for losing trades
         reward -= (losing_trades / total_trades) * 0.1 * self.portfolio_value
 
-        # if total_trades > 5:
-        #     logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
-        #                 f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
-        #                 f"Portfolio value: {portfolio_value}")            
+        if total_trades > 5:
+            logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
+                        f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
+                        f"Portfolio value: {portfolio_value}")            
 
         # Penalize for low SQN
         reward += (sqn - 1.5) * 0.15 * self.portfolio_value
@@ -360,7 +365,7 @@ class TradingEnv(gym.Env):
         self.df = self.df / max_values
 
         # Handle NaN values
-        self._handle_nan_values()
+        self._handle_nan_values(self.df)
 
     def reset(self):
         # Reset the current step to the beginning
