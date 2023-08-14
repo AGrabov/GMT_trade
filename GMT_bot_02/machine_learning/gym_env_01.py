@@ -18,7 +18,7 @@ class TradingEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=1000.0, live=False, observation_window_length=10) -> None:
+    def __init__(self, initial_data, max_buffer_size=1000, transaction_cost=0.0005, cash=100.0, live=False, observation_window_length=10) -> None:
         super(TradingEnv, self).__init__()
 
         self.live = live
@@ -43,6 +43,7 @@ class TradingEnv(gym.Env):
         self.buy_price = np.zeros(self.num_columns)
         self.short_price = np.zeros(self.num_columns)
 
+        # Handle NaN values
         self._handle_nan_values(self.df)
 
         # Store the initial data
@@ -63,6 +64,7 @@ class TradingEnv(gym.Env):
         # For tracking trades
         self.trades = []
 
+        # For tracking positions
         self.long_position_open = False
         self.short_position_open = False
 
@@ -159,8 +161,8 @@ class TradingEnv(gym.Env):
     def step(self, action):
         # Ensure action is an array or list
         if not isinstance(action, (list, np.ndarray)):
-            raise ValueError(f"Expected action to be a list or numpy array, but got {type(action)} instead.")
-
+            raise ValueError(f"Expected action to be a list or numpy array, but got {type(action)} instead.")        
+        
         # If action is a scalar, convert to list
         if np.isscalar(action):
             action = [action]
@@ -192,10 +194,9 @@ class TradingEnv(gym.Env):
         if not isinstance(current_prices, (list, np.ndarray)):
             raise ValueError(f"Expected current_prices to be a list or numpy array, but got {type(current_prices)} instead.")
         
-        if current_prices.isna().any().any():
+        if current_prices.isnan().any():
             print("Warning: NaN values detected in the current_prices!\n Filling NaN values with various methods.")
             self._handle_nan_values(current_prices)
-
         
         print("Shape of current_prices:", current_prices.shape)
       
@@ -256,6 +257,8 @@ class TradingEnv(gym.Env):
         # if act in [1, 2, 3, 4]:  # If any trade action is taken
         #     self.cooldown_counter = self.cooldown_period
 
+        if self.current_step == 0:
+            self.current_step += 1
 
         # Calculate portfolio value
         asset_value = np.sum(self.portfolio * current_prices)
@@ -276,14 +279,16 @@ class TradingEnv(gym.Env):
             reward -= 0.3 * portfolio_value
             logger.info(f"Step {self.current_step}: Ending episode due to large drawdown")
             done = True
-
         
         # Calculate SQN
         rewards_array = np.array(self.portfolio_values[1:]) - np.array(self.portfolio_values[:-1])
-        sqn = np.mean(rewards_array) / np.std(rewards_array) * np.sqrt(len(rewards_array))
-
-        # Calculate Sharpe Ratio
-        sharpe_ratio = np.mean(rewards_array) / np.std(rewards_array)
+        std_dev = np.std(rewards_array)
+        if std_dev == 0:
+            sqn = 0
+            sharpe_ratio = 0
+        else:
+            sqn = np.mean(rewards_array) / std_dev * np.sqrt(len(rewards_array))
+            sharpe_ratio = np.mean(rewards_array) / std_dev
 
         total_trades = len([r for r in rewards_array])
 
@@ -294,21 +299,22 @@ class TradingEnv(gym.Env):
         winning_trades = len([r for r in rewards_array if r > 0])
 
         # Calculate winning percentage
-        win_percentage = winning_trades / total_trades * 100
+        win_percentage = winning_trades / total_trades * 100 if total_trades > 0 else 0
 
         # Reward for winning trades
-        reward += (winning_trades / total_trades) * 0.1 * self.portfolio_value
+        reward += (winning_trades / total_trades) * 0.1 * self.portfolio_value if total_trades > 0 else 0
 
         # Penalize for losing trades
-        reward -= (losing_trades / total_trades) * 0.1 * self.portfolio_value
+        reward -= (losing_trades / total_trades) * 0.1 * self.portfolio_value if total_trades > 0 else 0
 
+        
         if total_trades > 5:
             logger.info(f"Step {self.current_step}: Winning trades percentage: {win_percentage}\n"
                         f"SQN: {sqn}, Sharpe Ratio: {sharpe_ratio}\n"
                         f"Portfolio value: {portfolio_value}")            
 
         # Penalize for low SQN
-        reward += (sqn - 1.5) * 0.15 * self.portfolio_value
+        reward += (sqn - 1.5) * 0.15 * self.portfolio_value if sqn != 0 else 0
 
         # Penalize for fast closing trades
         if self.long_position_open or self.short_position_open:
@@ -317,6 +323,7 @@ class TradingEnv(gym.Env):
                 reward -= 0.01 * portfolio_value
                 logger.info(f"Step {self.current_step}: Penalizing for fast closing trades")
 
+        
         # Reward for stable good metrics
         reward += 0.02 * (sharpe_ratio + sqn) * portfolio_value  # Emphasize stable metrics over cash size
 
@@ -370,6 +377,11 @@ class TradingEnv(gym.Env):
     def reset(self):
         # Reset the current step to the beginning
         self.current_step = 0
+
+        
+        if self.current_step >= len(self.df) - 1:
+            self.current_step = 0
+
 
         # Reset prices
         self.buy_price = np.zeros(self.num_columns)
