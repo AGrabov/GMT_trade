@@ -21,7 +21,7 @@ class TradingEnv(gym.Env):
         super(TradingEnv, self).__init__()
 
         self.live = live
-        self.money = cash
+        self.money = cash / 100
         self.observation_window_length = observation_window_length
         self.debug = debug
 
@@ -165,7 +165,7 @@ class TradingEnv(gym.Env):
 
     def reset(self):
         self.current_step = 0
-        self.money = self.cash
+        self.cash = self.money
         self.portfolio = np.zeros(self.num_columns)
         self.buy_price = np.zeros(self.num_columns)
         self.short_price = np.zeros(self.num_columns)
@@ -219,7 +219,10 @@ class TradingEnv(gym.Env):
         
         if not self.long_position_open and not self.short_position_open:
             if action == 1:  # Go Long (Buy)
-                quantity = self.cash * 0.9 / current_close
+                if current_close > 1e-10:  # Ensure current_close is not too small
+                    quantity = self.cash * 0.9 / current_close
+                else:
+                    quantity = 0
                 transaction_fee = quantity * current_close * self.transaction_cost
                 self.cash -= (quantity * current_close + transaction_fee)
                 self.portfolio[0] += quantity
@@ -247,8 +250,11 @@ class TradingEnv(gym.Env):
 
         elif self.long_position_open:
             if action == 2:  # Close Long Position
-                profit_or_loss = self.portfolio[0] * (current_close - self.buy_price)
-                self.cash += (self.portfolio[0] * current_close + profit_or_loss - profit_or_loss * self.transaction_cost)
+                profit_or_loss = self.portfolio[0] * (current_close - self.buy_price[0])
+                cash_update = self.portfolio[0] * current_close + profit_or_loss - profit_or_loss * self.transaction_cost
+                if not np.isnan(cash_update) and not np.isinf(cash_update):
+                    self.cash += cash_update
+
                 self.portfolio[0] = 0
                 self.buy_price[0] = 0
                 self.trades.append((self.current_step, 'close_long'))
@@ -266,8 +272,10 @@ class TradingEnv(gym.Env):
 
         elif self.short_position_open:
             if action == 4:  # Close Short Position
-                profit_or_loss = self.portfolio[0] * (self.short_price - current_close)
-                self.cash += (-self.portfolio[0] * current_close + profit_or_loss - profit_or_loss * self.transaction_cost)
+                profit_or_loss = self.portfolio[0] * (self.short_price[0] - current_close)
+                cash_update = (-self.portfolio[0] * current_close + profit_or_loss - profit_or_loss * self.transaction_cost)
+                if not np.isnan(cash_update) and not np.isinf(cash_update):  # Ensure cash_update is a valid number
+                    self.cash += cash_update
                 self.portfolio[0] = 0
                 self.short_price[0] = 0
                 self.trades.append((self.current_step, 'close_short'))
@@ -292,8 +300,12 @@ class TradingEnv(gym.Env):
                 logger.info(f"Step {self.current_step}: Hold")
 
     def _get_reward(self):
-        self.portfolio_value = self.cash + np.sum(self.portfolio * self.df.iloc[self.current_step]['close'])
-        reward = (self.portfolio_value - self.prev_portfolio_value)
+        # self.portfolio_value = self.cash + np.sum(self.portfolio * self.df.iloc[self.current_step]['close'])
+        # reward = (self.portfolio_value - self.prev_portfolio_value)
+        reward_update = self.portfolio_value - self.prev_portfolio_value
+        if not np.isnan(reward_update) and not np.isinf(reward_update):
+            reward = reward_update
+       
         reward += (self.reward - self.penalty)
         self.prev_portfolio_value = self.portfolio_value        
         return reward
