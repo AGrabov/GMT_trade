@@ -206,45 +206,51 @@ class TradingEnv(gym.Env):
         if self.current_step < self.observation_window_length:
             # If not enough steps, take as many as available from the start
             current_prices = self.df.iloc[:self.current_step]['close'].values
-            price_diff = current_prices[self.current_step] - current_prices[self.current_step+1] if len(current_prices) > 2 else 0.01
+            price_diff = current_prices[-1] - current_prices[-2] if len(current_prices) > 1 else 0.01
+            current_close = current_prices[-1]
         else:
             current_prices = self.df.iloc[self.current_step - self.observation_window_length:self.current_step]['close'].values
-            price_diff = current_prices[self.current_step] - current_prices[self.current_step+1]
+            price_diff = current_prices[0] - current_prices[1]
+            current_close = current_prices[0]
+
+        # Boundary check for current_step
+        if self.current_step >= len(self.df):
+            return
         
         if not self.long_position_open and not self.short_position_open:
             if action == 1:  # Go Long (Buy)
-                quantity = self.cash * 0.9 / current_prices[self.current_step]
-                transaction_fee = quantity * current_prices[self.current_step] * self.transaction_cost
-                self.cash -= (quantity * current_prices[self.current_step] + transaction_fee)
-                self.portfolio += quantity
-                self.buy_price = current_prices[self.current_step]
+                quantity = self.cash * 0.9 / current_close
+                transaction_fee = quantity * current_close * self.transaction_cost
+                self.cash -= (quantity * current_close + transaction_fee)
+                self.portfolio[0] += quantity
+                self.buy_price[0] = current_close
                 self.trades.append((self.current_step, 'buy'))
                 self.long_position_open = True
                 self.reward += 0.1
                 if self.debug:
-                    logger.info(f"Step {self.current_step}: Opening Long position (Buy) at price {current_prices[self.current_step]}")
+                    logger.info(f"Step {self.current_step}: Opening Long position (Buy) at price {current_close}")
             elif action == 3:  # Go Short (Sell)
-                quantity = self.cash * 0.9 / current_prices[self.current_step]
-                transaction_fee = quantity * current_prices[self.current_step] * self.transaction_cost
+                quantity = self.cash * 0.9 / current_close
+                transaction_fee = quantity * current_close * self.transaction_cost
                 self.cash -= transaction_fee
-                self.portfolio -= quantity
-                self.short_price = current_prices[self.current_step]
+                self.portfolio[0] -= quantity
+                self.short_price[0] = current_close
                 self.trades.append((self.current_step, 'sell'))
                 self.short_position_open = True
                 self.reward += 0.1
                 if self.debug:
-                    logger.info(f"Step {self.current_step}: Opening Short position (Sell) at price {current_prices[self.current_step]}")
+                    logger.info(f"Step {self.current_step}: Opening Short position (Sell) at price {current_close}")
             elif action == 2 or action == 4:  # Incorrect action
-                self.penalty += 0.2 * abs(price_diff) * 100 / current_prices
+                self.penalty += 0.2 * abs(price_diff) * 100 / current_close
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Incorrect action")
 
         elif self.long_position_open:
             if action == 2:  # Close Long Position
-                profit_or_loss = self.portfolio[self.current_step] * (current_prices[self.current_step] - self.buy_price)
-                self.cash += (self.portfolio[self.current_step] * current_prices[self.current_step] + profit_or_loss - profit_or_loss * self.transaction_cost)
-                self.portfolio[self.current_step] = 0
-                self.buy_price = 0
+                profit_or_loss = self.portfolio[0] * (current_close - self.buy_price)
+                self.cash += (self.portfolio[0] * current_close + profit_or_loss - profit_or_loss * self.transaction_cost)
+                self.portfolio[0] = 0
+                self.buy_price[0] = 0
                 self.trades.append((self.current_step, 'close_long'))
                 self.long_position_open = False
                 if profit_or_loss > 0:
@@ -252,18 +258,18 @@ class TradingEnv(gym.Env):
                 else:
                     self.penalty += 0.1 * profit_or_loss
                 if self.debug:
-                    logger.info(f"Step {self.current_step}: Closing Long Position at price {current_prices[self.current_step]}\n Profit/loss: {profit_or_loss}")
+                    logger.info(f"Step {self.current_step}: Closing Long Position at price {current_close}\n Profit/loss: {profit_or_loss}")
             elif action == 3 or action == 4 or action == 1:
-                self.penalty += 0.2 * abs(price_diff) * 100 / current_prices
+                self.penalty += 0.2 * abs(price_diff) * 100 / current_close
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Incorrect action")
 
         elif self.short_position_open:
             if action == 4:  # Close Short Position
-                profit_or_loss = self.portfolio[self.current_step] * (self.short_price - current_prices[self.current_step])
-                self.cash += (-self.portfolio[self.current_step] * current_prices[self.current_step] + profit_or_loss - profit_or_loss * self.transaction_cost)
-                self.portfolio[self.current_step] = 0
-                self.short_price = 0
+                profit_or_loss = self.portfolio[0] * (self.short_price - current_close)
+                self.cash += (-self.portfolio[0] * current_close + profit_or_loss - profit_or_loss * self.transaction_cost)
+                self.portfolio[0] = 0
+                self.short_price[0] = 0
                 self.trades.append((self.current_step, 'close_short'))
                 self.short_position_open = False
                 if profit_or_loss > 0:
@@ -271,17 +277,17 @@ class TradingEnv(gym.Env):
                 else:
                     self.penalty += 0.1 * profit_or_loss
                 if self.debug:
-                    logger.info(f"Step {self.current_step}: Closing Short Position at price {current_prices[self.current_step]}\n Profit/loss: {profit_or_loss}")
+                    logger.info(f"Step {self.current_step}: Closing Short Position at price {current_close}\n Profit/loss: {profit_or_loss}")
             elif action == 1 or action == 2 or action == 3:
-                self.penalty += 0.2 * abs(price_diff) * 100 / current_prices[self.current_step]
+                self.penalty += 0.2 * abs(price_diff) * 100 / current_close
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Incorrect action")
 
         elif action == 0:  # Do nothing
             if self.prev_portfolio_value >= self.portfolio_value:
-                self.penalty += 0.2 * abs(price_diff) * 100 / current_prices[self.current_step]
+                self.penalty += 0.2 * abs(price_diff) * 100 / current_close
             else:
-                self.reward += 0.2 * abs(price_diff) * 100 / current_prices[self.current_step]
+                self.reward += 0.2 * abs(price_diff) * 100 / current_close
             if self.debug:
                 logger.info(f"Step {self.current_step}: Hold")
 
