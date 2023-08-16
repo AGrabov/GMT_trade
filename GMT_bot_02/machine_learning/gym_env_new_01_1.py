@@ -11,6 +11,8 @@ import talib
 from data_normalizer import CryptoDataNormalizer
 from gym import Env, spaces, utils
 from gym.utils import seeding
+from stable_baselines3 import A2C
+from optuna import Trial, create_study
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -74,9 +76,14 @@ class TradingEnv(gym.Env):
         self.portfolio_values = [self.prev_portfolio_value]
         self.portfolio_difference = 0
         self.current_close = 0
+        self.close_difference = 0
 
         # For tracking trades
         self.trades = []
+        self.closed_trades = []
+
+        # For tracking metrics
+        self.metrics = {}
 
         # For tracking positions
         self.long_position_open = False
@@ -93,6 +100,8 @@ class TradingEnv(gym.Env):
         self.prev_action = None
         self.no_action_counter = 0
         self.no_action_period = 10
+        self.invalid_action = False
+        self.invalid_action_counter = 0
 
         # For real-time plotting
         self.fig, self.ax = plt.subplots()
@@ -206,8 +215,13 @@ class TradingEnv(gym.Env):
         self.prev_portfolio_value = self.portfolio_value
         self.portfolio_difference = 0
         self.current_close = 0
+        self.close_difference = 0
+        self.invalid_action = False
+        self.invalid_action_counter = 0
         self.portfolio_values = [self.prev_portfolio_value]
         self.trades = []
+        self.closed_trades = []
+        self.metrics = {}
         self.df = self._calculate_indicators(self.initial_data)        
         self.df = self.normalizer.normalize_returns(self.df)
         self._handle_nan_values(self.df)
@@ -224,8 +238,9 @@ class TradingEnv(gym.Env):
 
     def step(self, action):         
         self.current_step += 1        
-        self._take_action(action)
-        reward = self._get_reward()        
+        self._take_action(action)        
+        reward = self._get_reward()  
+        self.metrics = self._update_metrics()            
         self.prev_portfolio_value = self.portfolio_value        
         if self.debug:
             logger.info(f'Step: {self.current_step}, Action: {action}, Reward: {reward:.5f}, Portfolio value: {self.portfolio_value:.5f}\n'
@@ -233,13 +248,16 @@ class TradingEnv(gym.Env):
         done = self.current_step >= len(self.df) - 1
         if self.portfolio_value <= 0:
             done = True
-        obs = self._next_observation()
-        return obs, reward, done, {}
+        obs = self._next_observation()        
+        info = {}
+        return obs, reward, done, info
 
     def _take_action(self, action):
         self.portfolio_difference = 0
         self.penalty = 0
         self.reward = 0
+        self.current_close = 0
+        self.invalid_action = False
 
         if self.current_step < 2:
             return
@@ -253,13 +271,14 @@ class TradingEnv(gym.Env):
         price_diff = round(price_diff, 5)
         self.current_close = current_prices[0]
 
-        if self.current_step >= len(self.df):
-            return
+        self.close_difference = self.initial_data['close_change'].values[self.current_step]
 
-        
+        if self.current_step >= len(self.df):
+            return        
 
         self.portfolio_value = self.cash + self.portfolio[0] * self.current_close
         self.portfolio_difference = self.portfolio_value - self.prev_portfolio_value
+        
 
         # Calculate rewards and penalties for the current step
         if not self.long_position_open and not self.short_position_open:
@@ -272,6 +291,7 @@ class TradingEnv(gym.Env):
                 self.buy_price[0] = self.current_close
                 self.trades.append((self.current_step, 'buy'))
                 self.long_position_open = True
+                self.invalid_action = False
                 self.reward += 0.05
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Opening Long at price {self.current_close:.5f}, Cost: {trade_cost:.5f}")
@@ -282,15 +302,18 @@ class TradingEnv(gym.Env):
                 self.portfolio[0] -= quantity
                 self.short_price[0] = self.current_close
                 self.trades.append((self.current_step, 'sell'))
+                self.invalid_action = False
                 self.short_position_open = True
                 self.reward += 0.05
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Opening Short at price {self.current_close:.5f}, Cost: {quantity * self.current_close:.5f}")
             elif action == 2 or action == 4:  # Incorrect action
+                self.invalid_action = True                
                 self.penalty += 0.15
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Incorrect action, penalty: {self.penalty:.2f}")
             elif action == 0:  # No action
+                self.invalid_action = False
                 if self.prev_action == 0:
                     self.no_action_counter += 1
                     if self.no_action_counter >= self.no_action_period:
@@ -312,6 +335,8 @@ class TradingEnv(gym.Env):
                 self.portfolio[0] = 0
                 self.buy_price[0] = 0
                 self.trades.append((self.current_step, 'close_long'))
+                self.closed_trades.append(profit_or_loss)
+                self.invalid_action = False
                 self.long_position_open = False
                 if profit_or_loss > 0:
                     self.reward += 0.4
@@ -320,10 +345,12 @@ class TradingEnv(gym.Env):
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Closed Long ---- Profit/loss: {profit_or_loss:.5f}")
             elif action == 3 or action == 4 or action == 1:
+                self.invalid_action = True                
                 self.penalty += 0.15
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Incorrect action, penalty: {self.penalty:.2f}")
             elif action == 0:
+                self.invalid_action = False
                 if price_diff > 0:
                     self.reward += 0.15
                     if self.debug:
@@ -347,6 +374,8 @@ class TradingEnv(gym.Env):
                 self.portfolio[0] = 0
                 self.short_price[0] = 0
                 self.trades.append((self.current_step, 'close_short'))
+                self.closed_trades.append(profit_or_loss)
+                self.invalid_action = False
                 self.short_position_open = False
                 if profit_or_loss > 0:
                     self.reward += 0.4
@@ -355,10 +384,12 @@ class TradingEnv(gym.Env):
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Closed Short ---- Profit/loss: {profit_or_loss:.5f}")
             elif action == 1 or action == 2 or action == 3:
+                self.invalid_action = True                
                 self.penalty += 0.15
                 if self.debug:
                     logger.info(f"Step {self.current_step}: Incorrect action, penalty: {self.penalty:.2f}")
             elif action == 0:
+                self.invalid_action = False
                 if price_diff < 0:
                     self.reward += 0.15
                     if self.debug:
@@ -375,13 +406,55 @@ class TradingEnv(gym.Env):
         # No action counter
         if action != 0:           
             self.no_action_counter = 0
-        self.prev_action = action       
+        self.prev_action = action 
 
+        # Invalid action counter
+        if self.invalid_action:
+            self.invalid_action_counter += 1
+            self.invalid_action = False            
+        else:
+            self.invalid_action_counter = 0
+
+        if self.invalid_action_counter > 2:
+            self.penalty += 0.1 * self.invalid_action_counter/2
+            if self.debug:
+                logger.info(f"Step {self.current_step}: Invalid action {self.invalid_action_counter} times in a row, penalty: {self.penalty:.2f}")
+        
+        
+        if len(self.closed_trades) > 3:      
+            metrics = self._update_metrics()
+            sharpe_ratio = metrics["sharpe_ratio"]
+            sqn = metrics["sqn"]
+            win_ratio = metrics["win_ratio"]
+            if sqn < 0.5:
+                self.penalty += abs(0.5 - sqn) / 2
+                if self.debug:
+                    logger.info(f"Step {self.current_step}: SQN < 0.5 ({sqn:.4f}), penalty: {self.penalty:.4f}")
+            elif sqn < 0:
+                self.penalty += 0.3
+                if self.debug:
+                    logger.info(f"Step {self.current_step}: SQN < 0 ({sqn:.4f}), penalty: {self.penalty:.4f}")
+            elif sqn > 1.5:
+                self.reward += abs(sqn - 1.5) / 2
+                if self.debug:
+                    logger.info(f"Step {self.current_step}: SQN > 1.5 ({sqn:.4f}), reward: {self.reward:.4f}")
+                
+            if win_ratio < 0.5:
+                self.penalty += abs(0.5 - win_ratio)
+                if self.debug:
+                    logger.info(f"Step {self.current_step}: Win ratio < 0.5 ({win_ratio:.4f}), penalty: {self.penalty:.4f}")
+            elif win_ratio > 0.5:
+                self.reward += abs(win_ratio - 0.5)
+                if self.debug:
+                    logger.info(f"Step {self.current_step}: Win ratio > 0.5 ({win_ratio:.4f}), reward: {self.reward:.4f}")                
+            
+    
         # Update portfolio value
         self.portfolio_value = self.cash + self.portfolio[0] * self.current_close
         self.portfolio_difference = self.portfolio_value - self.prev_portfolio_value
         self.portfolio_values.append(self.portfolio_value)
 
+        
         # self.reward *= abs(self.portfolio_difference / self.prev_portfolio_value) * 100
         # self.penalty *= abs(self.portfolio_difference / self.prev_portfolio_value) * 100
 
@@ -390,13 +463,58 @@ class TradingEnv(gym.Env):
     
     def _get_reward(self):
         reward = 0        
-        reward += (self.reward - self.penalty) * abs(self.portfolio_difference / self.prev_portfolio_value) * 10
+        reward += (self.reward - self.penalty) * (abs(self.portfolio_difference / self.prev_portfolio_value) * 10 + abs(self.close_difference))        
         self.portfolio_value += reward        
         if self.debug:
             logger.info(f"Step {self.current_step}: Reward: {reward:.4f}")      
         return reward
-    
-    # Rewritten code
+
+    def _update_metrics(self):
+        trades_length = len(self.closed_trades)
+        if trades_length < 2:
+            return 0, 0, 0, 0, 0, 0, 0
+        else:
+            returns_array = self.closed_trades
+            total_trades = trades_length
+            winning_trades = np.sum(np.array(self.closed_trades) > 0)
+            losing_trades = trades_length - winning_trades
+
+            # Calculate drawdown
+            peak = np.maximum.accumulate(self.portfolio_values)
+            drawdown = (peak - self.portfolio_value) / peak
+
+            # Ratio of winning trades
+            win_ratio = winning_trades / total_trades if total_trades > 0 else 0
+            win_perc = win_ratio * 100
+
+            # Calculate SQN        
+            variance = np.var(returns_array)
+            std_dev = np.sqrt(variance) if variance > 0 else 0
+            if std_dev == 0:
+                sqn = 0
+                sharpe_ratio = 0
+            else:
+                sqn = np.sqrt(len(returns_array)) * np.mean(returns_array) / std_dev
+                sharpe_ratio = np.mean(returns_array) / std_dev
+            
+            if self.debug:
+                logger.info(f"Step {self.current_step}: Drawdown: {drawdown[0]:.4f}, Sharpe Ratio: {round(sharpe_ratio, 5)}, SQN: {round(sqn, 5)}\n"
+                        f"Total trades: {total_trades}, Win/Loss trades: {winning_trades} / {losing_trades}, Win percent: {win_perc:.0f} %")
+
+            metrics = {
+                "drawdown": drawdown,
+                "sharpe_ratio": sharpe_ratio,
+                "sqn": sqn,
+                "win_ratio": win_ratio,
+                "total_trades": total_trades,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,            
+                
+            }
+
+            return metrics
+
+
     def render(self, mode='human', close=False):
         # Extract OHLC data up to the current step
         ohlc_data = self.df.iloc[:self.current_step+1]
@@ -435,11 +553,37 @@ class TradingEnv(gym.Env):
     def close(self):
         pass
 
-import pandas as pd
+def objective(trial: Trial):
+    global df  # Declare df as a global variable
+
+    learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
+    gamma = trial.suggest_float("gamma", 0.9, 0.9999)
+    ent_coef = trial.suggest_float("ent_coef", 1e-5, 1e-1, log=True)
+    
+    env = TradingEnv(df, live=False)
+    model = A2C('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, ent_coef=ent_coef)
+    
+    # You might want to use a smaller number of timesteps for faster trials
+    model.learn(total_timesteps=len(df)*10, progress_bar=True)
+    
+    # Evaluate the trained model on a validation set and return the performance
+    # For simplicity, we'll use the same env for validation
+    obs = env.reset()
+    total_reward = 0
+    for _ in range(20000):
+        action, _states = model.predict(obs)
+        obs, reward, done, info = env.step(action)
+        total_reward += reward
+        if done:
+            obs = env.reset()
+    
+    return total_reward
 
 if __name__ == "__main__":
-    csv_name = 'GMTUSDT - 5m_(since_2022-03-15).csv' #GMTUSDT - 30m_(since_2022-03-15).csv
+    csv_name = 'GMTUSDT - 30m_(since_2022-03-15).csv' #GMTUSDT - 30m_(since_2022-03-15).csv
     csv_path = f'./data_csvs/{csv_name}'
+    symbol = 'GMTUSDT'
+    binance_timeframe = '30m'
 
     # Read the CSV file using more efficient parameters
     df = pd.read_csv(csv_path, header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -458,7 +602,7 @@ if __name__ == "__main__":
 
     # Calculate the daily change in price
     df['close'] = df['close'].astype(float)
-    df['close_change'] = df['close'].pct_change()
+    df['close_change'] = df['close'].pct_change() * 100
 
     # Display a limited number of rows from the prepared data
     print(df.head(10))
@@ -468,11 +612,29 @@ if __name__ == "__main__":
     print()   
     
 
-    env = TradingEnv(df, debug=False)
-    obs = env.reset()
-    done = False
-    while not done:
-        # Sample actions in batches or using vectorized operations
-        actions = env.action_space.sample()
-        for action in actions:
-            obs, reward, done, _ = env.step(action)
+    # env = TradingEnv(df, debug=True)
+    # obs = env.reset()
+    # done = False
+    # while not done:
+    #     # Sample actions in batches or using vectorized operations
+    #     actions = env.action_space.sample()
+    #     for action in actions:
+    #         obs, reward, done, _ = env.step(action)
+
+    # study = create_study(direction="maximize")
+    # study.optimize(objective, n_trials=100)
+
+    try:
+        # Create an instance of the custom trading environment
+        env = TradingEnv(df, debug=False)
+
+        # Initialize agent with a smaller learning rate
+        model = A2C('MlpPolicy', env, verbose=1)  # Adjusted learning rate
+
+        # Train agent
+        model.learn(total_timesteps=len(df), progress_bar=True)
+
+        # Save the agent
+        model.save(f"./models/a2c_trading_{symbol}_{binance_timeframe}")
+    except Exception as e:
+        print(f"Error during model training or saving: {e}")
