@@ -92,7 +92,7 @@ class TradingEnv(gym.Env):
 
         self.prev_action = None
         self.no_action_counter = 0
-        self.no_action_period = 5
+        self.no_action_period = 10
 
         # For real-time plotting
         self.fig, self.ax = plt.subplots()
@@ -201,7 +201,7 @@ class TradingEnv(gym.Env):
         self.cooldown_counter = 0
         self.prev_action = None
         self.no_action_counter = 0
-        self.no_action_period = 5
+        self.no_action_period = 10
         self.portfolio_value = self.cash
         self.prev_portfolio_value = self.portfolio_value
         self.portfolio_difference = 0
@@ -211,6 +211,7 @@ class TradingEnv(gym.Env):
         self.df = self._calculate_indicators(self.initial_data)        
         self.df = self.normalizer.normalize_returns(self.df)
         self._handle_nan_values(self.df)
+        self._handle_nan_values(self.initial_data)
         self.data_buffer = deque(self.initial_data.values, maxlen=self.data_buffer.maxlen)
         return self._next_observation()
 
@@ -437,7 +438,7 @@ class TradingEnv(gym.Env):
 import pandas as pd
 
 if __name__ == "__main__":
-    csv_name = 'GMTUSDT - 30m_(since_2022-03-15).csv' #GMTUSDT - 30m_(since_2022-03-15).csv
+    csv_name = 'GMTUSDT - 5m_(since_2022-03-15).csv' #GMTUSDT - 30m_(since_2022-03-15).csv
     csv_path = f'./data_csvs/{csv_name}'
 
     # Read the CSV file using more efficient parameters
@@ -452,8 +453,20 @@ if __name__ == "__main__":
     # Create a new DataFrame with the index set to the timestamp column
     df = df.set_index('timestamp')
 
+    # Convert price column to float values
+    df['open'] = df['open'].astype(float)
+
+    # Calculate the daily change in price
+    df['close'] = df['close'].astype(float)
+    df['close_change'] = df['close'].pct_change()
+
     # Display a limited number of rows from the prepared data
     print(df.head(10))
+    print(df.tail(3))
+    print()
+    print(f'Total number of rows: {len(df)}')
+    print()   
+    
 
     env = TradingEnv(df, debug=False)
     obs = env.reset()
