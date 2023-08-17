@@ -1,7 +1,7 @@
 import gym
 from stable_baselines3 import A2C
 from optuna import Trial, create_study
-from gym_env import TradingEnv
+from gym_env_new_02 import TradingEnv
 import pandas as pd
 import datetime as dt
 from data_feed_01 import BinanceFuturesData
@@ -11,8 +11,8 @@ target_coin = 'GMT'
 base_currency = 'USDT' # 'BUSD' # 
 symbol = target_coin + base_currency
 dataname = (f'{target_coin}/{base_currency}')
-start_date = dt.datetime.strptime("2022-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
-end_date = dt.datetime.strptime("2023-07-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+start_date = dt.datetime.strptime("2023-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+end_date = dt.datetime.strptime("2023-08-01 00:00:00", "%Y-%m-%d %H:%M:%S")
 
 timeframe =  'Minutes' # 'Hours' #  
 compression = 30
@@ -54,9 +54,16 @@ df = BinanceFuturesData.fetch_data(symbol=symbol, startdate=start_date, enddate=
 if df is None or df.empty:
     raise ValueError("Failed to fetch data or the data is empty.")
 
+# # Create a new DataFrame without empty rows
+# df = df.dropna()
+
+
+
+    
 # Print the dataframe's top few rows
 print('Fteching data...')
-print(df.head(3))
+print(df.head(10))
+print(df.tail(3))
 print()
 print(f'Number of timesteps in the fteched data: {len(df)}')
 
@@ -68,7 +75,7 @@ try:
     env = TradingEnv(df, live=False, debug=True)
 
     # Initialize agent with a smaller learning rate
-    model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.005, gamma=0.995, ent_coef=1e-5)  # Adjusted learning rate
+    model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.0005, )  # Adjusted learning rate
 
     # Train agent
     model.learn(total_timesteps=len(df)*10, progress_bar=True)
