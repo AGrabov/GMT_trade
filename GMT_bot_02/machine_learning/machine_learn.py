@@ -1,7 +1,8 @@
 import gym
 from stable_baselines3 import A2C
 from optuna import Trial, create_study
-from gym_env_new_02 import TradingEnv
+# from gym_env_new_02 import TradingEnv
+from gym_trading_env_03 import TradingEnv
 import pandas as pd
 import datetime as dt
 from data_feed_01 import BinanceFuturesData
@@ -56,14 +57,11 @@ if df is None or df.empty:
 
 # # Create a new DataFrame without empty rows
 # df = df.dropna()
-
-
-
     
 # Print the dataframe's top few rows
 print('Fteching data...')
-print(df.head(10))
-print(df.tail(3))
+print(df.head(3))
+print(df.tail(2))
 print()
 print(f'Number of timesteps in the fteched data: {len(df)}')
 
@@ -72,7 +70,7 @@ print(f'Number of timesteps in the fteched data: {len(df)}')
 
 try:
     # Create an instance of the custom trading environment
-    env = TradingEnv(df, live=False, debug=True)
+    env = TradingEnv(initial_data=df, live=False, debug=True)
 
     # Initialize agent with a smaller learning rate
     model = A2C('MlpPolicy', env, verbose=1, learning_rate=0.0005, )  # Adjusted learning rate

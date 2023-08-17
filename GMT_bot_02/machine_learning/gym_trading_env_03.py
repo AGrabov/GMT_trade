@@ -206,7 +206,8 @@ class TradingEnv(gym.Env):
     
     def _next_observation(self):
         if self.current_step <= self.observation_window_length:
-            obs = self.df.iloc[: self.current_step].values.flatten()
+            step_diff = self.observation_window_length - self.current_step
+            obs = self.df.iloc[: self.current_step + step_diff].values.flatten()
         else:
             obs = self.df.iloc[self.current_step - self.observation_window_length: self.current_step].values.flatten()       
         return obs
