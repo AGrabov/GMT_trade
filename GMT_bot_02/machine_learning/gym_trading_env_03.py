@@ -97,6 +97,21 @@ class TradingEnv(gym.Env):
         # Ensure df is not None or empty
         if df is None or df.empty:
             raise ValueError("Invalid dataframe provided for indicator calculation.")
+        
+        df['lag_1'] = df['close'].shift(1)
+        df['lag_2'] = df['close'].shift(2)
+        
+        # Rolling statistics
+        df['rolling_mean'] = df['close'].rolling(window=20).mean()
+        df['rolling_std'] = df['close'].rolling(window=20).std()
+        df['rolling_min'] = df['close'].rolling(window=20).min()
+        df['rolling_max'] = df['close'].rolling(window=20).max()
+        df['rolling_skew'] = df['close'].rolling(window=20).skew()
+        df['rolling_kurt'] = df['close'].rolling(window=20).kurt()
+        df['rolling_median'] = df['close'].rolling(window=20).median()
+        df['rolling_25_quantile'] = df['close'].rolling(window=20).quantile(0.25)
+        df['rolling_75_quantile'] = df['close'].rolling(window=20).quantile(0.75)
+        df['rolling_variance'] = df['close'].rolling(window=20).var()
     
         # Calculate Heikin Ashi candlesticks
         df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
@@ -126,6 +141,9 @@ class TradingEnv(gym.Env):
 
         # Calculate MESA Adaptive Moving Average         
         df['MAMA'], df['FAMA'] = talib.MAMA(df['close'], fastlimit=0.5, slowlimit=0.05)
+
+        # Calculate RSI
+        df['RSI'] = talib.RSI(df['close'], timeperiod=14)
         
         # Calculate Absolute Price Oscillator
         df['APO'] = talib.APO(df['close'], fastperiod=3, slowperiod=13, matype=2)
@@ -140,6 +158,10 @@ class TradingEnv(gym.Env):
         df['NATR'] = talib.NATR(df['high'], df['low'], df['close'], timeperiod=13)
 
         df['ST_RSI_K'], df['ST_RSI_D'] = talib.STOCHRSI(df['close'], timeperiod=14, fastk_period=5, fastd_period=3, fastd_matype=1)
+
+        df['STOCH_K'], df['STOCH_D'] = talib.STOCHF(df['high'], df['low'], df['close'], fastk_period=11, fastd_period=15, fastd_matype=5)
+
+        df['WILLR'] = talib.WILLR(df['high'], df['low'], df['close'], timeperiod=14)
 
         df['CORREL'] = talib.CORREL(df['high'], df['low'], timeperiod=30)
 
@@ -220,10 +242,8 @@ class TradingEnv(gym.Env):
         if self.debug:
             logger.info(f'Step: {self.current_step}, Action: {action}, Reward: {reward:.5f}, Portfolio value: {self.portfolio_value:.5f}\n'
                         f'---------------------- ')
-        done = self._done()
-        
+        done = self._done()        
         obs = self._next_observation()        
-        
         info = {}
         if self.current_step >= len(self.df) - 1:
             self.current_step = 0
