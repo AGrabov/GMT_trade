@@ -50,16 +50,16 @@ def objective(trial: Trial):
     # model1 = A2C('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, policy_kwargs=policy_kwargs,)
     model2 = PPO('MlpPolicy', env, verbose=1, learning_rate=learning_rate, 
                  gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, 
-                policy_kwargs=policy_kwargs, clip_range=clip_range)
+            policy_kwargs=policy_kwargs, clip_range=clip_range, batch_size=batch_size,)
     
-    model3 = DDPG('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, 
-                  ent_coef=ent_coef, batch_size=batch_size, buffer_size=buffer_size,
-                  tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts, 
-                  target_update_interval=target_update_interval)
-    model4 = DQN('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, 
-                 ent_coef=ent_coef, batch_size=batch_size, buffer_size=buffer_size,
-             exploration_fraction=exploration_fraction, exploration_final_eps=exploration_final_eps, 
-             policy_kwargs=policy_kwargs, learning_starts=learning_starts)
+    # model3 = DDPG('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, 
+    #               ent_coef=ent_coef, batch_size=batch_size, buffer_size=buffer_size,
+    #               tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts, 
+    #               target_update_interval=target_update_interval)
+    # model4 = DQN('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, 
+    #              ent_coef=ent_coef, batch_size=batch_size, buffer_size=buffer_size,
+    #          exploration_fraction=exploration_fraction, exploration_final_eps=exploration_final_eps, 
+    #          policy_kwargs=policy_kwargs, learning_starts=learning_starts)
 
     
     # You might want to use a smaller number of timesteps for faster trials
