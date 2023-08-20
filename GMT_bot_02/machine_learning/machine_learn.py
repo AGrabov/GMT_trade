@@ -97,8 +97,8 @@ if use_fteched_data:
         print(f"Error fetching data: {e}")
 
 else:
-    csv_name = 'GMTUSDT - 30m_(since_2022-03-15).csv' #GMTUSDT - 30m_(since_2022-03-15).csv
-    csv_path = f'./data_csvs/{csv_name}'
+    csv_name = 'GMTUSDT_30m_data.csv' #GMTUSDT - 30m_(since_2022-03-15).csv
+    csv_path = f'./gmt-bot/data_csvs/GMTUSDT_30m_data.csv'
     symbol = 'GMTUSDT'
     binance_timeframe = '30m'
 
