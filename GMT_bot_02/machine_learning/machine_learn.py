@@ -103,7 +103,7 @@ else:
     binance_timeframe = '30m'
 
     # Read the CSV file using more efficient parameters
-    df = pd.read_csv(csv_path, header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df = pd.read_csv('GMTUSDT_30m_data.csv', header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
     # Create a new DataFrame without empty rows
     df = df.dropna()
