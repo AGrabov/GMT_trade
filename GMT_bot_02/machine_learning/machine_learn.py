@@ -98,7 +98,7 @@ if use_fteched_data:
 
 else:
     csv_name = 'GMTUSDT_30m_data.csv' #GMTUSDT - 30m_(since_2022-03-15).csv
-    csv_path = f'./data_csvs/GMTUSDT_30m_data.csv'
+    csv_path = f'data_csvs/GMTUSDT_30m_data.csv'
     symbol = 'GMTUSDT'
     binance_timeframe = '30m'
 
