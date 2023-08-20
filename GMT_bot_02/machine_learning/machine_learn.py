@@ -50,7 +50,7 @@ def objective(trial: Trial):
     # model1 = A2C('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, policy_kwargs=policy_kwargs,)
     model2 = PPO('MlpPolicy', env, verbose=1, learning_rate=learning_rate, 
                  gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, 
-                policy_kwargs=policy_kwargs, clip_range=clip_range, gradient_steps=gradient_steps)
+                policy_kwargs=policy_kwargs, clip_range=clip_range)
     
     model3 = DDPG('MlpPolicy', env, verbose=1, learning_rate=learning_rate, gamma=gamma, 
                   ent_coef=ent_coef, batch_size=batch_size, buffer_size=buffer_size,
