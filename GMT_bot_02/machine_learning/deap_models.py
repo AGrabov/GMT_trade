@@ -3,9 +3,11 @@
 import logging
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor, ExtraTreesRegressor
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error, explained_variance_score
 import pandas as pd
 import numpy as np
+import os
+
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, QuantileTransformer, PowerTransformer
 import datetime as dt
@@ -52,8 +54,6 @@ dataname = f'{target_coin}/{base_currency}'
 normalizer = CryptoDataNormalizer()
 predictions = []  # Initialize predictions list
 
-
-
 # Fetch or read data
 if use_fteched_data:
     try:
@@ -64,7 +64,8 @@ if use_fteched_data:
 else:
     csv_name = 'GMTUSDT - 30m_(since_2022-03-15).csv'
     csv_path = f'./data_csvs/{csv_name}'
-    df = pd.read_csv('GMTUSDT_30m_data.csv', header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    # csv_path = '/root/gmt-bot/data_csvs/GMTUSDT - 30m_(since_2022-03-15).csv'
+    df = pd.read_csv(csv_path, header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df = df.dropna()
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df = df.set_index('timestamp')
@@ -138,7 +139,7 @@ param_grids = {
     },
     'ETR': {
         'n_estimators': [10, 50, 100, 200],
-        'max_features': ['auto', 'sqrt', 'log2'],
+        'max_features': [None, 'sqrt', 'log2'],
         'max_depth': [10, 20, 30, None],
         'min_samples_split': [2, 5, 10],
         'min_samples_leaf': [1, 2, 4],
@@ -165,15 +166,28 @@ name = names.get(model_type)
 
 # Choose between RandomizedSearchCV and GridSearchCV
 if search_type == 'randomized':
-    search = RandomizedSearchCV(estimator=model, param_distributions=param_grids[model_type], n_iter=100, cv=5, verbose=2 if debug else 0, random_state=42, n_jobs=-1)    
+    search = RandomizedSearchCV(estimator=model, param_distributions=param_grids[model_type], n_iter=100, cv=5, verbose=2 if debug else 1, random_state=42, n_jobs=-1)    
 elif search_type == 'grid':
-    search = GridSearchCV(estimator=model, param_grid=param_grids[model_type], cv=5, verbose=2 if debug else 0, n_jobs=-1)    
+    search = GridSearchCV(estimator=model, param_grid=param_grids[model_type], cv=5, verbose=2 if debug else 1, n_jobs=-1)    
 else:
     logger.info(f"search_type {search_type} not supported. Please select from 'randomized' and 'grid'")
 
 # Fit the model on training data and validate on validation set
 search.fit(X_train, y_train)
 model = search.best_estimator_
+
+# Create directory
+models_directory = f'./models/{model_type}/'        
+if not os.path.exists(models_directory):
+    os.makedirs(models_directory)
+
+
+# Save the best parameters to a JSON file
+try:
+    with open(f"./models/{model_type}/best_params_for_model_{model_type}.json", "w") as f:
+        json.dump(search.best_params_, f)
+except Exception as e:
+    logger.error(f"Error saving best params: {e}")
 
 # Predict and evaluate on validation set
 y_val_pred = model.predict(X_val)
@@ -182,6 +196,7 @@ mae_val = mean_absolute_error(y_val, y_val_pred)
 r2_val = r2_score(y_val, y_val_pred)
 mape_val = mean_absolute_percentage_error(y_val, y_val_pred)
 rmse_val = np.sqrt(mse_val)
+evs = explained_variance_score(y_val, y_val_pred)
 
 if debug:
     logger.info(f"Validation Mean Squared Error: {mse_val}")
@@ -189,6 +204,7 @@ if debug:
     logger.info(f"Validation R2 Score: {r2_val}")
     logger.info(f"Validation Mean Absolute Percentage Error: {mape_val}")
     logger.info(f"Validation Root Mean Squared Error: {rmse_val}")
+    logger.info(f"Validation Explained Variance Score: {evs}")
 
 # Predict and evaluate on test set
 y_pred = model.predict(X_test)
@@ -197,6 +213,7 @@ mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 mape = mean_absolute_percentage_error(y_test, y_pred)
 rmse = np.sqrt(mse)
+evs = explained_variance_score(y_test, y_pred)
 
 if debug:
     logger.info(f"Test Mean Squared Error: {mse}")
@@ -204,7 +221,8 @@ if debug:
     logger.info(f"Test R2 Score: {r2}")
     logger.info(f"Test Mean Absolute Percentage Error: {mape}")
     logger.info(f"Test Root Mean Squared Error: {rmse}")
-    
+    logger.info(f"Test Explained Variance Score: {evs}")
+
 predictions.append(y_pred)
 predictions = np.concatenate(predictions, axis=0)
 
@@ -218,6 +236,26 @@ plt.ylabel('Close Price')
 plt.legend()
 plt.show()
 
+# Plot residuals
+residuals = y_test - y_pred
+        
+# Residual Plot
+plt.figure(figsize=(15, 6))
+plt.scatter(y_pred, residuals, alpha=0.5)
+plt.title('Residuals vs Predicted Values')
+plt.xlabel('Predicted Values')
+plt.ylabel('Residuals')
+plt.axhline(y=0, color='r', linestyle='--')
+plt.show()
+        
+# Histogram of Residuals
+plt.figure(figsize=(15, 6))
+plt.hist(residuals, bins=30, edgecolor='k')
+plt.title('Histogram of Residuals')
+plt.xlabel('Residual Value')
+plt.ylabel('Frequency')
+plt.show()    
+
 # Feature importance
 feature_importances = model.feature_importances_
 sorted_idx = np.argsort(feature_importances)
@@ -225,6 +263,17 @@ plt.barh(X.columns[sorted_idx], feature_importances[sorted_idx])
 plt.xlabel(f"{name} Feature Importance")
 plt.show()
 
+# Define the directory path
+model_directory = f'./models/{model_type}/'
+
+# Check if the directory exists, if not, create it
+if not os.path.exists(model_directory):
+    os.makedirs(model_directory)
+
 # Save the model and scaler
-joblib.dump(model, f'./models/{model_type}/{model_type}_{search_type}_{symbol}_{binance_timeframe}.pkl')
-joblib.dump(scaler, f'./models/{model_type}/{model_type}_scaler_{scaler_type}_{symbol}_{binance_timeframe}.pkl')
+joblib.dump(model, f'{model_directory}{model_type}_{search_type}_{symbol}_{binance_timeframe}.pkl')
+joblib.dump(scaler, f'{model_directory}{model_type}_scaler_{scaler_type}_{symbol}_{binance_timeframe}.pkl')
+
+
+        
+

@@ -24,7 +24,7 @@ class TAIndicators:
         df['close_change_pct'] = df['close'].pct_change()
     
         # Adding lag features for 'close' column
-        for lag in range(1, 4):  # Adding 3 lag features
+        for lag in range(1, 6):  # Adding 5 lag features
             df[f'lag_{lag}'] = df['close'].shift(lag)
 
         
@@ -56,7 +56,7 @@ class TAIndicators:
         df['WCLPRICE'] = talib.WCLPRICE(df['high'], df['low'], df['close'])
 
         # Calculate Moving Average
-        df['MA'] = talib.MA(df['close'], timeperiod=50, matype=0)            
+        df['MA'] = talib.MA(df['close'], timeperiod=10, matype=0)            
 
         # Calculate Moving Average Convergence Divergence
         df['MACD'], df['MACDSIGNAL'], df['MACDHIST'] = talib.MACDEXT(df['close'], 
@@ -100,21 +100,13 @@ class TAIndicators:
         df['WILLR'] = talib.WILLR(df['high'], df['low'], df['close'], timeperiod=14)
 
         df['BETA'] = talib.BETA(df['high'], df['low'], timeperiod=5)
-
         df['CORREL'] = talib.CORREL(df['high'], df['low'], timeperiod=30)
-
         df['LINEARREG'] = talib.LINEARREG(df['close'], timeperiod=14)
-
         df['LINEARREG_ANGLE'] = talib.LINEARREG_ANGLE(df['close'], timeperiod=14)
-
         df['LINEARREG_INTERCEPT'] = talib.LINEARREG_INTERCEPT(df['close'], timeperiod=14)
-
         df['LINEARREG_SLOPE'] = talib.LINEARREG_SLOPE(df['close'], timeperiod=14)
-
         df['STDDEV'] = talib.STDDEV(df['close'], timeperiod=5, nbdev=1)
-
         df['TSF'] = talib.TSF(df['close'], timeperiod=14)
-
         df['VAR'] = talib.VAR(df['close'], timeperiod=5, nbdev=1)
 
         # Calculate Hilbert Transform

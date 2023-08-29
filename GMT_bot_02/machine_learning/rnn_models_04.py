@@ -1,10 +1,13 @@
 import tensorflow as tf
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, explained_variance_score
 from sklearn.model_selection import KFold, train_test_split
 from keras_tuner import RandomSearch
 from tensorflow import keras
 import os
 import argparse
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 import pickle
 import pandas as pd
 import numpy as np
@@ -41,6 +44,7 @@ class RNNModels:
         else:
             csv_name = 'GMTUSDT - 30m_(since_2022-03-15).csv'
             csv_path = f'./data_csvs/{csv_name}'
+            # csv_path = '/root/gmt-bot/data_csvs/GMTUSDT - 30m_(since_2022-03-15).csv'
             df = pd.read_csv(csv_path, header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df = df.dropna()
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -51,6 +55,15 @@ class RNNModels:
         df.dropna(inplace=True)
         df = TAIndicators(df)._calculate_indicators()
         logger.info("Added TA Indicators")
+        print(df.head(5))
+        print()
+        logger.info(f'Number of timesteps in the data: {len(df)}')
+        
+        return df
+
+    def split_data(self, df):
+        train_size = int(0.8 * len(df))
+        train_data, test_data = train_test_split(df, train_size=train_size, shuffle=False)
         try:
             scalers = {
                 'standard': StandardScaler(),
@@ -60,14 +73,18 @@ class RNNModels:
                 'power': PowerTransformer()
             }
             scaler = scalers.get(self.settings['scaler_type'])
-            df[df.columns] = scaler.fit_transform(df)
+            logger.info(f"Scaler: {self.settings['scaler_type']}")
+            train_data[train_data.columns] = scaler.fit_transform(train_data)
+            print(train_data.head(5))
+            print()
+            logger.info(f"Train data length: {len(train_data)}")
+            test_data[test_data.columns] = scaler.fit_transform(test_data)
+            print(test_data.head(5))
+            print()
+            logger.info(f"Test data length: {len(test_data)}")
         except Exception as e:
             logger.error(f"Error normalizing data: {e}")
-        return df
 
-    def split_data(self, df):
-        train_size = int(0.8 * len(df))
-        train_data, test_data = train_test_split(df, train_size=train_size, shuffle=False)
         return train_data, test_data
 
     def create_sequences(self, data, seq_length):
@@ -124,9 +141,21 @@ class RNNModels:
     def evaluate_model(self, model, X_test, y_test):
         loss, mae, mse = model.evaluate(X_test, y_test, verbose=2)
         predictions = model.predict(X_test)
+        
+        # Additional metrics
+        mape = np.mean(np.abs((y_test - predictions) / y_test)) * 100
         r2 = r2_score(y_test, predictions)
+        evs = explained_variance_score(y_test, predictions)
+        
         logger.info(f'R2 Score: {r2}')
+        logger.info(f'Mean Absolute Percentage Error (MAPE): {mape}%')
+        logger.info(f'Explained Variance Score: {evs}')
         logger.info(f'Test set Mean Abs Error: {mae}\nTest set Mean Squared Error: {mse}\nTest set Root Mean Squared Error: {np.sqrt(mse)}')
+        
+        # Visualizations
+        self.visualize_predictions(y_test, predictions)
+        self.plot_residuals(y_test, predictions)
+        
         return predictions
 
     def visualize_predictions(self, y_test, predictions):
@@ -137,10 +166,30 @@ class RNNModels:
         plt.legend()
         plt.show()
 
+    def plot_residuals(self, y_test, predictions):
+        residuals = y_test - predictions
+        
+        # Residual Plot
+        plt.figure(figsize=(15, 6))
+        plt.scatter(predictions, residuals, alpha=0.5)
+        plt.title('Residuals vs Predicted Values')
+        plt.xlabel('Predicted Values')
+        plt.ylabel('Residuals')
+        plt.axhline(y=0, color='r', linestyle='--')
+        plt.show()
+        
+        # Histogram of Residuals
+        plt.figure(figsize=(15, 6))
+        plt.hist(residuals, bins=30, edgecolor='k')
+        plt.title('Histogram of Residuals')
+        plt.xlabel('Residual Value')
+        plt.ylabel('Frequency')
+        plt.show()
+
     def build_and_train_arima(self, y_train):
         # Fit ARIMA model
         model_arima = ARIMA(y_train, order=(5,1,0))
-        model_arima_fit = model_arima.fit(disp=0)
+        model_arima_fit = model_arima.fit()
         return model_arima_fit
     
     def build_transformer_model(self, X_train):
@@ -169,9 +218,21 @@ class RNNModels:
 
         return model_transformer
 
-
     def hyperparameter_tuning(self, X_train, y_train, X_test, y_test):
         if self.settings['model_type'] == 'ARIMA':
+            # diff =y_train.diff().dropna()
+            log_series = np.log(y_train)
+            # season = seasonal_decompose(y_train, model='multiplicative')
+
+            series = log_series
+            
+            result = adfuller(series)
+            print('ADF Statistic: {}'.format(result[0]))
+            print('p-value: {}'.format(result[1]))
+
+            plot_acf(series)
+            plot_pacf(series)
+
             # ARIMA hyperparameter tuning
             best_score, best_cfg = float("inf"), None
             p_values = [0, 1, 2, 4, 6, 8, 10]
@@ -182,13 +243,27 @@ class RNNModels:
                     for q in q_values:
                         order = (p, d, q)
                         try:
-                            mse = self.evaluate_arima_model(y_train, order)
+                            model_arima = ARIMA(series, order=order)
+                            model_arima_fit = model_arima.fit()  # disp=0 suppresses output
+                            mse = self.evaluate_model(model_arima_fit, series)  # Evaluate on training data
                             if mse < best_score:
                                 best_score, best_cfg = mse, order
                             logger.info(f'ARIMA{order} MSE={mse}')
                         except:
                             continue
             logger.info(f'Best ARIMA{best_cfg} MSE={best_score}')
+
+            if best_cfg is not None:
+                model_arima = ARIMA(log_series, order=best_cfg)
+                model_arima_fit = model_arima.fit()
+                
+                # Evaluate the best model
+                self.evaluate_model(model_arima_fit, y_train)  # Evaluate on training data
+
+                # Save ARIMA model
+                with open(f'./models/RNN/BEST_ARIMA_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl', 'wb') as pkl:
+                    pickle.dump(model_arima_fit, pkl)
+
 
         elif self.settings['model_type'] == 'Transformer':
             def build_transformer_model(hp):
@@ -283,12 +358,18 @@ class RNNModels:
                 build_model,
                 objective='val_loss',
                 max_trials=5,
-                executions_per_trial=3,
-                
+                executions_per_trial=3,                
             )
-
             tuner.search(X_train, y_train, epochs=5, validation_data=(X_test, y_test))
 
+        if self.settings['model_type'] != 'ARIMA':
+            best_model = tuner.get_best_models(num_models=1)[0]
+            best_model_path = f'./models/RNN/Best_{self.settings["model_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5'
+            best_model.save(best_model_path)
+            logger.info(f"Best model saved to {best_model_path}")
+
+            # Evaluate the best model
+            self.evaluate_model(best_model, X_test, y_test)
 
     def ensemble_methods(self, X_test, y_test):
         models_directory = f'./models/RNN/'
@@ -317,6 +398,11 @@ class RNNModels:
             rmse = np.sqrt(mse)
             logger.info(f'Ensemble R2 Score: {r2}')
             logger.info(f'Ensemble Test set Mean Abs Error: {mae}\nEnsemble Test set Mean Squared Error: {mse}\nEnsemble Test set Root Mean Squared Error: {rmse}')
+
+            # Visualize ensemble predictions
+            self.visualize_predictions(y_test, predictions)
+            self.plot_residuals(y_test, predictions)
+
             return predictions
         else:
             logger.warning("No models found in the directory for ensemble.")
@@ -326,62 +412,88 @@ class RNNModels:
         df = self.fetch_or_read_data()
         df = self.preprocess_data(df)
         train_data, test_data = self.split_data(df)
-        X_train, y_train = self.create_sequences(train_data)
-        X_test, y_test = self.create_sequences(test_data)
-        
-        if self.settings['model_type'] == 'ARIMA':
-            arima_model = self.build_and_train_arima(y_train)
-            arima_predictions = arima_model.forecast(steps=len(y_test))
-            r2 = r2_score(y_test, arima_predictions)
-            logger.info(f'ARIMA R2 Score: {r2}')
-            
-            # Save ARIMA model
-            with open(f'./models/RNN/ARIMA_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl', 'wb') as pkl:
-                pickle.dump(arima_model, pkl)
-                
-        elif self.settings['model_type'] == 'Transformer':
-            transformer_model = self.build_transformer_model(X_train)
-            self.compile_and_train_model(transformer_model, X_train, y_train)
-            transformer_predictions = self.evaluate_model(transformer_model, X_test, y_test)
-            self.visualize_predictions(y_test, transformer_predictions)
-            
-            # Save Transformer model
-            transformer_model.save(f'./models/RNN/Transformer_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
-            
-        else:
-            self.model = self.build_model(model_type=self.settings['model_type'])
-            self.compile_and_train_model(self.model, X_train, y_train)
-            predictions = self.evaluate_model(self.model, X_test, y_test)
-            self.visualize_predictions(y_test, predictions)
-            
-            # Save the model
-            self.model.save(f'./models/RNN/{self.settings["model_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
-            
+        X_train, y_train = self.create_sequences(train_data, self.settings['seq_length'])
+        X_test, y_test = self.create_sequences(test_data, self.settings['seq_length'])
+
+        # Create directory
+        models_directory = f'./models/RNN/'        
+        if not os.path.exists(models_directory):
+            os.makedirs(models_directory)
+
         # Hyperparameter Tuning
         if self.settings['use_hp_tuning']:
             self.hyperparameter_tuning(X_train, y_train, X_test, y_test)
-        
-        # Ensemble Methods
-        models_directory = f'./models/RNN/'
-        if os.path.isdir(models_directory) and any(os.scandir(models_directory)):
-            ensemble_predictions = self.ensemble_methods(X_test, y_test)
-            if ensemble_predictions is not None:
-                self.visualize_predictions(y_test, ensemble_predictions)
+
+        else: 
+            if self.settings['model_type'] == 'ARIMA':
+                arima_model = self.build_and_train_arima(y_train)
+                arima_predictions = arima_model.forecast(steps=len(y_test))
+                r2 = r2_score(y_test, arima_predictions)
+                logger.info(f'ARIMA R2 Score: {r2}')
+                
+                # Save ARIMA model
+                with open(f'./models/RNN/ARIMA_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl', 'wb') as pkl:
+                    pickle.dump(arima_model, pkl)
+                    
+            elif self.settings['model_type'] == 'Transformer':
+                transformer_model = self.build_transformer_model(X_train)
+                self.compile_and_train_model(transformer_model, X_train, y_train)
+                transformer_predictions = self.evaluate_model(transformer_model, X_test, y_test)
+                self.visualize_predictions(y_test, transformer_predictions)
+                
+                # Save Transformer model
+                transformer_model.save(f'./models/RNN/Transformer_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
+                
+            else:
+                self.model = self.build_model(model_type=self.settings['model_type'])
+                self.compile_and_train_model(self.model, X_train, y_train)
+                predictions = self.evaluate_model(self.model, X_test, y_test)
+                self.visualize_predictions(y_test, predictions)
+                
+                # Save the model
+                self.model.save(f'./models/RNN/{self.settings["model_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
+                
+           
+        if self.settings['use_ensemble']:
+            # Ensemble Methods
+            models_directory = f'./models/RNN/'
+            if os.path.isdir(models_directory) and any(os.scandir(models_directory)):
+                ensemble_predictions = self.ensemble_methods(X_test, y_test)
+                if ensemble_predictions is not None:
+                    self.visualize_predictions(y_test, ensemble_predictions)
 
 
 if __name__ == '__main__':
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='RNN models train.')
+    parser.add_argument('--model_type', choices=['Dense', 'LSTM', 'GRU', 'Transformer', 'ARIMA'], type=str, default='GRU', help='Select model type')
+    parser.add_argument('--use_hp_tuning', type=bool, default=True, help='Use hyperparameter tuning')
+    parser.add_argument('--use_ensemble', type=bool, default=False, help='Use ensemble methods. Combines all models and evaluates on test set.')
+    parser.add_argument('--scaler_type', choices=['standard', 'minmax', 'robust', 'quantile', 'power'], type=str, default='minmax', help='Select data scaler type')
+    parser.add_argument('--use_fetched_data', type=bool, default=False, help='Use fetched data')
+    parser.add_argument('--seq_length', type=int, default=48, help='Data segments length')
+
+    args = parser.parse_args()
+
+    model_type = args.model_type    
+    scaler_type = args.scaler_type
+    use_hp_tuning = args.use_hp_tuning
+    use_ensemble = args.use_ensemble
+    use_fetched_data = args.use_fetched_data
+    seg_lenght = args.seq_length
+
     SETTINGS = {
         'target_coin': 'GMT',
         'base_currency': 'USDT',
         'binance_timeframe': '30m',
         'start_date': dt.datetime.strptime("2023-05-01 00:00:00", "%Y-%m-%d %H:%M:%S"),
         'end_date': dt.datetime.strptime("2023-08-01 00:00:00", "%Y-%m-%d %H:%M:%S"),
-        'use_fetched_data': False,
-        'seq_length': 48,
-        'model_type': 'LSTM', # Dense, LSTM, GRU, Transformer, ARIMA
-        'scaler_type': 'minmax',
-        'use_hp_tuning': False,
-        'use_ensemble': False,
+        'use_fetched_data': use_fetched_data,
+        'seq_length': seg_lenght,
+        'model_type': model_type, # Dense, LSTM, GRU, Transformer, ARIMA
+        'scaler_type': scaler_type,
+        'use_hp_tuning': use_hp_tuning,
+        'use_ensemble': use_ensemble,
     }
     rnn_models = RNNModels(SETTINGS)
     rnn_models.run()
