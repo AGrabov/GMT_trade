@@ -47,6 +47,16 @@ class ClusterModels:
         df.dropna(inplace=True)
         df = TAIndicators(df)._calculate_indicators()
         logger.info("Added TA Indicators")
+        print(df.head(5))
+        print()
+        logger.info(f'Number of timesteps in the data: {len(df)}')
+
+        return df
+    
+    def split_data(self, df):        
+        train_size = int(0.8 * len(df))
+        train_data, test_data = train_test_split(df, train_size=train_size, shuffle=False)      
+
         try:
             scalers = {
                 'standard': StandardScaler(),
@@ -56,10 +66,24 @@ class ClusterModels:
                 'power': PowerTransformer()
             }
             scaler = scalers.get(self.settings['scaler_type'])
-            df[df.columns] = scaler.fit_transform(df)
+            train_data[train_data.columns] = scaler.fit_transform(train_data)
+            test_data[test_data.columns] = scaler.fit_transform(test_data)
+            
         except Exception as e:
             logger.error(f"Error normalizing data: {e}")
-        return df
+        
+        return train_data, test_data
+
+    def extract_features_and_target(self, train_data, test_data, target_column='close'):
+        # Extracting features and target for training data
+        X_train = train_data.drop(columns=[target_column])
+        y_train = train_data[target_column]
+
+        # Extracting features and target for testing data
+        X_test = test_data.drop(columns=[target_column])
+        y_test = test_data[target_column]
+
+        return X_train, y_train, X_test, y_test
 
     # Apply Clustering
     def apply_clustering(self, X, n_clusters=3):

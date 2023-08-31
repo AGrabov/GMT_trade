@@ -10,6 +10,8 @@ import datetime as dt
 import shap
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score, mean_absolute_percentage_error
 import os
+from bayes_opt import BayesianOptimization
+from pyswarm import pso
 
 import argparse
 from data_feed_01 import BinanceFuturesData
@@ -48,24 +50,155 @@ args = parser.parse_args()
 use_fetched_data = args.use_fetched_data
 param_optimization = args.param_optimization
 model_type = args.model_type
+hp_optimizer_type = args.hp_optimizer_type
 
+# This function optimizes hyperparameters using Bayesian Optimization
+# def bayesian_objective(learning_rate, gamma, ent_coef, n_steps, batch_size, buffer_size, exploration_fraction, exploration_final_eps, tau, 
+# layer_1, layer_2, clip_range, learning_starts, target_update_interval, gradient_steps):
+def bayesian_objective(df, model_type, pbounds):
+    (learning_rate, gamma, ent_coef, n_steps, batch_size, buffer_size, exploration_fraction, exploration_final_eps, tau, 
+    layer_1, layer_2, clip_range, learning_starts, target_update_interval, gradient_steps) = pbounds    
 
-# learning_rate_range = range(1e-4, 1e-2),
-# gamma_range = range(0.85, 0.999, step=0.001),
-# ent_coef_range = range(1e-6, 1e-1),
-# n_steps_range = range(16, 2048),
-# batch_size_range = range(16, 512)
-# buffer_size_range = range(10000, 1000000),
-# exploration_fraction_range = range(0.1, 1.0),
-# exploration_final_eps_range = range(0.01, 0.5),
-# tau_range = range(0.001, 0.1),
-# layer_1_range = range(32, 256),
-# layer_2_range = range(32, 256),
-# policy_kwargs = dict(net_arch=[layer_1_range, layer_2_range])
-# clip_range_range = range(0.1, 0.4),
-# learning_starts_range = range(0, 10000, step=100),
-# target_update_interval_range = range(1, 1000),
-# gradient_steps_range = range(1, 100)
+    policy_kwargs = dict(net_arch=[layer_1, layer_2])
+
+    if model_type == 'A2C':
+        env = TradingEnv(df, live=False, observation_window_length=30)
+        model = A2C('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    ent_coef=ent_coef, n_steps=n_steps, policy_kwargs=policy_kwargs,)
+        
+    elif model_type == 'PPO':
+        env = TradingEnv(df, live=False, observation_window_length=30)
+        model = PPO('MlpPolicy', env, verbose=2, learning_rate=learning_rate, 
+                    gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, 
+                policy_kwargs=policy_kwargs, clip_range=clip_range, batch_size=batch_size,)
+        
+    elif model_type == 'DDPG':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = DDPG('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts, 
+                    gradient_steps=gradient_steps, optimize_memory_usage=True) 
+        
+    elif model_type == 'DQN':
+        env = DQN_Env(df, live=False, observation_window_length=30)
+        model = DQN('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    batch_size=batch_size, buffer_size=buffer_size, tau=tau, 
+                    exploration_fraction=exploration_fraction, exploration_final_eps=exploration_final_eps, 
+                    policy_kwargs=policy_kwargs, learning_starts=learning_starts, gradient_steps=gradient_steps,
+                    target_update_interval=target_update_interval, optimize_memory_usage=True)  
+        
+    elif model_type == 'TD3':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = TD3('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma,
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts,
+                    gradient_steps=gradient_steps)
+        
+    elif model_type == 'SAC':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = SAC('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma,
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts,
+                    gradient_steps=gradient_steps)
+        
+    if model_type in ['DDPG', 'TD3', 'DQN', 'SAC']:
+        try:
+            model.learn(total_timesteps=len(df), progress_bar=True)        
+        except Exception as e:
+            logger.error(f"Error during model training: {e}")
+    else:
+        try:
+            model.learn(total_timesteps=len(df)*5, progress_bar=True)        
+        except Exception as e:
+            logger.error(f"Error during model training: {e}")
+        
+    # Evaluate the trained model on a validation set and return the performance    
+    obs = env.reset()
+    total_reward = 0
+    for _ in range(1000):
+        action, _states = model.predict(obs)
+        obs, reward, done, info = env.step(action)
+        total_reward += reward
+        if done:
+            obs = env.reset()
+
+    logger.info(f"Total reward: {total_reward}")    
+    
+    return total_reward
+
+# This function optimizes hyperparameters using PSO
+def pso_objective(x):
+    global df
+    (learning_rate, gamma, ent_coef, n_steps, batch_size, buffer_size, exploration_fraction, exploration_final_eps, tau, 
+    layer_1, layer_2, clip_range, learning_starts, target_update_interval, gradient_steps) = x
+
+    policy_kwargs = dict(net_arch=[layer_1, layer_2])
+    
+    if model_type == 'A2C':
+        env = TradingEnv(df, live=False, observation_window_length=30)
+        model = A2C('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    ent_coef=ent_coef, n_steps=n_steps, policy_kwargs=policy_kwargs,)
+        
+    elif model_type == 'PPO':
+        env = TradingEnv(df, live=False, observation_window_length=30)
+        model = PPO('MlpPolicy', env, verbose=2, learning_rate=learning_rate, 
+                    gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, 
+                policy_kwargs=policy_kwargs, clip_range=clip_range, batch_size=batch_size,)
+        
+    elif model_type == 'DDPG':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = DDPG('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts, 
+                    gradient_steps=gradient_steps, optimize_memory_usage=True) 
+        
+    elif model_type == 'DQN':
+        env = DQN_Env(df, live=False, observation_window_length=30)
+        model = DQN('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    batch_size=batch_size, buffer_size=buffer_size, tau=tau, 
+                    exploration_fraction=exploration_fraction, exploration_final_eps=exploration_final_eps, 
+                    policy_kwargs=policy_kwargs, learning_starts=learning_starts, gradient_steps=gradient_steps,
+                    target_update_interval=target_update_interval, optimize_memory_usage=True)  
+        
+    elif model_type == 'TD3':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = TD3('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma,
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts,
+                    gradient_steps=gradient_steps)
+        
+    elif model_type == 'SAC':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = SAC('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma,
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts,
+                    gradient_steps=gradient_steps)
+        
+    if model_type in ['DDPG', 'TD3', 'DQN', 'SAC']:
+        try:
+            model.learn(total_timesteps=len(df), progress_bar=True)        
+        except Exception as e:
+            logger.error(f"Error during model training: {e}")
+    else:
+        try:
+            model.learn(total_timesteps=len(df)*5, progress_bar=True)        
+        except Exception as e:
+            logger.error(f"Error during model training: {e}")
+        
+    # Evaluate the trained model on a validation set and return the performance    
+    obs = env.reset()
+    total_reward = 0
+    for _ in range(1000):
+        action, _states = model.predict(obs)
+        obs, reward, done, info = env.step(action)
+        total_reward += reward
+        if done:
+            obs = env.reset()
+
+    logger.info(f"Total reward: {total_reward}")    
+
+    return -total_reward  # Minimize negative reward because PSO minimizes the function
+
 
 # params = {
 #     'learning_rate' : range(1e-4, 1e-2),
@@ -95,54 +228,54 @@ def objective(trial: Trial):
 
     learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
     gamma = trial.suggest_float("gamma", 0.85, 0.999, step=0.001)
-    # ent_coef = trial.suggest_float("ent_coef", 1e-6, 1e-1, log=True)
-    # n_steps = trial.suggest_int("n_steps", 16, 2048, log=True)
+    ent_coef = trial.suggest_float("ent_coef", 1e-6, 1e-1, log=True)
+    n_steps = trial.suggest_int("n_steps", 16, 2048, log=True)
     batch_size = trial.suggest_int("batch_size", 16, 512, log=True)
     buffer_size = trial.suggest_int("buffer_size", 10000, 1000000, log=True)
-    # exploration_fraction = trial.suggest_float("exploration_fraction", 0.1, 1.0)
-    # exploration_final_eps = trial.suggest_float("exploration_final_eps", 0.01, 0.5)
+    exploration_fraction = trial.suggest_float("exploration_fraction", 0.1, 1.0)
+    exploration_final_eps = trial.suggest_float("exploration_final_eps", 0.01, 0.5)
     tau = trial.suggest_float("tau", 0.001, 0.1)
     layer_1 = trial.suggest_int("layer_1", 32, 256)
     layer_2 = trial.suggest_int("layer_2", 32, 256)
     policy_kwargs = dict(net_arch=[layer_1, layer_2])
-    # clip_range = trial.suggest_float("clip_range", 0.1, 0.4)
+    clip_range = trial.suggest_float("clip_range", 0.1, 0.4)
     learning_starts = trial.suggest_int("learning_starts", 0, 10000, step=100)
-    # target_update_interval = trial.suggest_int("target_update_interval", 1, 1000)
+    target_update_interval = trial.suggest_int("target_update_interval", 1, 1000)
     gradient_steps = trial.suggest_int("gradient_steps", 1, 100)
 
     
     if model_type == 'A2C':
         env = TradingEnv(df, live=False, observation_window_length=30)
-    #     model = A2C('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
-    #                 ent_coef=ent_coef, n_steps=n_steps, policy_kwargs=policy_kwargs,)
+        model = A2C('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    ent_coef=ent_coef, n_steps=n_steps, policy_kwargs=policy_kwargs,)
         
-    # elif model_type == 'PPO':
-    #     env = TradingEnv(df, live=False, observation_window_length=30)
-    #     model = PPO('MlpPolicy', env, verbose=2, learning_rate=learning_rate, 
-    #                 gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, 
-    #             policy_kwargs=policy_kwargs, clip_range=clip_range, batch_size=batch_size,)
+    elif model_type == 'PPO':
+        env = TradingEnv(df, live=False, observation_window_length=30)
+        model = PPO('MlpPolicy', env, verbose=2, learning_rate=learning_rate, 
+                    gamma=gamma, ent_coef=ent_coef, n_steps=n_steps, 
+                policy_kwargs=policy_kwargs, clip_range=clip_range, batch_size=batch_size,)
         
-    # elif model_type == 'DDPG':
-    #     env = DDPG_Env(df, live=False, observation_window_length=30)
-    #     model = DDPG('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
-    #                 buffer_size=buffer_size, batch_size=batch_size,
-    #                 tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts, 
-    #                 gradient_steps=gradient_steps, optimize_memory_usage=True) 
+    elif model_type == 'DDPG':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = DDPG('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts, 
+                    gradient_steps=gradient_steps, optimize_memory_usage=True) 
         
-    # elif model_type == 'DQN':
-    #     env = DQN_Env(df, live=False, observation_window_length=30)
-    #     model = DQN('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
-    #                 batch_size=batch_size, buffer_size=buffer_size, tau=tau, 
-    #                 exploration_fraction=exploration_fraction, exploration_final_eps=exploration_final_eps, 
-    #                 policy_kwargs=policy_kwargs, learning_starts=learning_starts, gradient_steps=gradient_steps,
-    #                 target_update_interval=target_update_interval, optimize_memory_usage=True)  
+    elif model_type == 'DQN':
+        env = DQN_Env(df, live=False, observation_window_length=30)
+        model = DQN('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma, 
+                    batch_size=batch_size, buffer_size=buffer_size, tau=tau, 
+                    exploration_fraction=exploration_fraction, exploration_final_eps=exploration_final_eps, 
+                    policy_kwargs=policy_kwargs, learning_starts=learning_starts, gradient_steps=gradient_steps,
+                    target_update_interval=target_update_interval, optimize_memory_usage=True)  
         
-    # elif model_type == 'TD3':
-    #     env = DDPG_Env(df, live=False, observation_window_length=30)
-    #     model = TD3('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma,
-    #                 buffer_size=buffer_size, batch_size=batch_size,
-    #                 tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts,
-    #                 gradient_steps=gradient_steps)
+    elif model_type == 'TD3':
+        env = DDPG_Env(df, live=False, observation_window_length=30)
+        model = TD3('MlpPolicy', env, verbose=2, learning_rate=learning_rate, gamma=gamma,
+                    buffer_size=buffer_size, batch_size=batch_size,
+                    tau=tau, policy_kwargs=policy_kwargs, learning_starts=learning_starts,
+                    gradient_steps=gradient_steps)
         
     elif model_type == 'SAC':
         env = DDPG_Env(df, live=False, observation_window_length=30)
@@ -219,27 +352,59 @@ print()
 print(f'Number of timesteps in the data: {len(df)}')
 
 if param_optimization:
-    try:
-        if model_type in ['DDPG', 'DQN', 'TD3', 'SAC']:
-            study = create_study(direction="maximize")
-            study.optimize(objective, n_trials=10)        
-        else:
-            study = create_study(direction="maximize")
-            study.optimize(objective, n_trials=100)
-        logger.info(study.best_params)
+    if args.hp_optimizer_type == 'optuna':
+        try:
+            if model_type in ['DDPG', 'DQN', 'TD3', 'SAC']:
+                study = create_study(direction="maximize")
+                study.optimize(objective, n_trials=10)        
+            else:
+                study = create_study(direction="maximize")
+                study.optimize(objective, n_trials=100)
+            logger.info(study.best_params)
 
-        # Create directory
-        models_directory = f'./models/{model_type}/'        
-        if not os.path.exists(models_directory):
-            os.makedirs(models_directory)
+            # Create directory
+            models_directory = f'./models/{model_type}/'        
+            if not os.path.exists(models_directory):
+                os.makedirs(models_directory)
 
-        # Save the best parameters to a JSON file
-        with open(f"./models/{model_type}/best_params_for_model_{model_type}.json", "w") as f:
-            json.dump(study.best_params, f)
+            # Save the best parameters to a JSON file
+            with open(f"./models/{model_type}/best_params_for_model_{model_type}.json", "w") as f:
+                json.dump(study.best_params, f)
 
-    except Exception as e:
-        print(f"Error during model training or saving: {e}")
+        except Exception as e:
+            print(f"Error during model training or saving: {e}")
 
+    elif args.hp_optimizer_type == 'bayesian':
+        optimizer = BayesianOptimization(
+            f=bayesian_objective,
+            pbounds={
+            'learning_rate' : range(1e-4, 1e-2),
+            'gamma': range(0.85, 0.999, step=0.001),
+            'ent_coef' : range(1e-6, 1e-1),
+            'n_steps' : range(16, 2048),
+            'batch_size' : range(16, 512),
+            'buffer_size' : range(10000, 1000000),
+            'exploration_fraction' : range(0.1, 1.0),
+            'exploration_final_eps' : range(0.01, 0.5),
+            'tau' : range(0.001, 0.1),
+            'layer_1' : range(32, 256),
+            'layer_2' : range(32, 256),
+            'policy_kwargs' : dict(net_arch=['layer_1', 'layer_2']),
+            'clip_range' : range(0.1, 0.4),
+            'learning_starts' : range(0, 10000, step=100),
+            'target_update_interval' : range(1, 1000),
+            'gradient_steps' : range(1, 100)
+            },
+            random_state=1,
+        )
+        optimizer.maximize(init_points=10, n_iter=50)
+
+    elif args.hp_optimizer_type == 'PSO':
+        lb = [1e-4, 0.85, 1e-6, 16, 16, 10000, 0.1, 0.1, 0.001, 32, 32, 0.1, 0, 1, 1]  # Lower bounds
+        ub = [1e-2, 0.999, 1e-1, 2048, 512, 1000000, 0.5, 0.5, 0.1, 256, 256, 0.4, 1000, 100]  # Upper bounds
+        xopt, fopt = pso(pso_objective, lb, ub)
+    else:
+        print("Invalid optimizer type")
 else:
     try:
         if model_type == 'A2C':

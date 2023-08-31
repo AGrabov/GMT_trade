@@ -61,6 +61,36 @@ class SVMModels:
         df = TAIndicators(df)._calculate_indicators()
         logger.info("Added TA Indicators")
         
+        # try:
+        #     scalers = {
+        #         'standard': StandardScaler(),
+        #         'minmax': MinMaxScaler(),
+        #         'robust': RobustScaler(),
+        #         'quantile': QuantileTransformer(),
+        #         'power': PowerTransformer()
+        #     }
+        #     scaler = scalers.get(self.settings['scaler_type'])
+        #     df[df.columns] = scaler.fit_transform(df)
+        # except Exception as e:
+        #     logger.error(f"Error normalizing data: {e}")
+        
+        return df
+
+    def split_data(self, df):
+        # Define features and target variable
+        # X = df.drop('close', axis=1)
+        # y = df['close']
+
+        # Hyperparameter tuning and model training
+        train_size = int(0.8 * len(df))
+        train_data, test_data = train_test_split(df, train_size=train_size, shuffle=False)
+
+        # # Split data and train model        
+        # X_train = X[:train_size]
+        # y_train = y[:train_size]
+        # X_test = X[train_size:len(df)]
+        # y_test = y[train_size:len(df)]
+
         try:
             scalers = {
                 'standard': StandardScaler(),
@@ -70,29 +100,13 @@ class SVMModels:
                 'power': PowerTransformer()
             }
             scaler = scalers.get(self.settings['scaler_type'])
-            df[df.columns] = scaler.fit_transform(df)
+            train_data[train_data.columns] = scaler.fit_transform(train_data)
+            test_data[test_data.columns] = scaler.fit_transform(test_data)
+            
         except Exception as e:
             logger.error(f"Error normalizing data: {e}")
         
-        return df
-
-    def split_data(self, df):
-        # Define features and target variable
-        X = df.drop('close', axis=1)
-        y = df['close']
-
-        # Hyperparameter tuning and model training
-        train_size = int(0.8 * len(df))
-        step_size = int(0.05 * len(df))
-
-        # Split data and train model
-        for start in range(0, len(df) - train_size, step_size):
-            X_train = X[start:start+train_size]
-            y_train = y[start:start+train_size]
-            X_test = X[start+train_size:start+train_size+step_size]
-            y_test = y[start+train_size:start+train_size+step_size]
-        
-        return X_train, y_train, X_test, y_test
+        return train_data, test_data
 
     def extract_features_and_target(self, train_data, test_data, target_column='close'):
         # Extracting features and target for training data
@@ -216,37 +230,73 @@ class SVMModels:
 
     def hp_tuning(self, X_train, y_train, X_test, y_test):
         # Define the hyperparameters and their possible values
-        parameters = {
-            'C': [0.1, 1, 10],
-            'kernel': ['linear', 'poly', 'rbf'], #, 'sigmoid'],
-            'degree': [2, 3, 4],  # Only used when kernel is 'poly'
-            'gamma': ['scale', 'auto']
-        }
+        # parameters = {
+        #     'C': [0.1, 1, 10],
+        #     'kernel': ['linear', 'poly', 'rbf'], #, 'sigmoid'],
+        #     'degree': [2, 3, 4],  # Only used when kernel is 'poly'
+        #     'gamma': ['scale', 'auto']
+        # }
         
         # Initialize the model based on the model_type setting
         if self.settings['model_type'] in ['SVR', 'LinearSVR', 'NuSVR']:
+            parameters = {
+                'kernel': ['linear', 'poly', 'rbf', 'sigmoid', 'precomputed'],
+                'degree': (1, 10),
+                'gamma': ['scale', 'auto'],
+                'coef0': (0.0, 1.0),
+                'tol': (1e-4, 1e-2),
+                'C': (0.1, 10),
+                'epsilon': (0.01, 1),
+                'shrinking': [False, True],                
+            }
             model = SVR()
         elif self.settings['model_type'] in ['SVC', 'LinearSVC', 'NuSVC']:
+            parameters = {
+                'C': (0.1, 10),
+                'kernel': ['linear', 'poly', 'rbf', 'sigmoid', 'precomputed'],
+                'degree': (1, 10),
+                'gamma': ['scale', 'auto'],
+                'coef0': (0.0, 1.0),
+                'shrinking': [False, True],
+                'probability': [False, True],
+                'tol': (1e-4, 1e-2),                
+                'decision_function_shape': ['ovo', 'ovr'],
+                'break_ties': [False, True],
+                'random_state': [None, 1, 42]
+            }
             model = SVC()
         else:
+            parameters = {                    
+                    'kernel': ['linear', 'poly', 'rbf', 'sigmoid', 'precomputed'],
+                    'degree': (1, 5),
+                    'gamma': ['scale', 'auto'],
+                    'coef0': (0.0, 1.0),
+                    'tol': (0.001, 0.01),
+                    'nu': (0.0, 1.0),
+                    'shrinking': [False, True],
+                    
+
+            }
             model = OneClassSVM()
 
         # Grid search with cross-validation
-        grid_search = GridSearchCV(model, parameters, cv=5, scoring='r2', verbose=2) 
-        grid_search.fit(X_train, y_train)
+        # grid_search = GridSearchCV(model, parameters, cv=3, scoring='r2', verbose=2) 
+        # grid_search.fit(X_train, y_train)
+        random_search = RandomizedSearchCV(model, parameters, cv=3, scoring='r2', verbose=2) 
+        random_search.fit(X_train, y_train)
         
         # Set the best model
-        self.model = grid_search.best_estimator_
+        self.model = random_search.best_estimator_
         
         # Evaluate the best model
         predictions = self.evaluate_svm(self.model, X_test, y_test)
         
-        logger.info(f"Best Parameters: {grid_search.best_params_}")
-        logger.info(f"Best Score: {-grid_search.best_score_}")
+        logger.info(f"Best Parameters: {random_search.best_params_}")
+        logger.info(f"Best Score: {-random_search.best_score_}")
 
         # Save the best parameters to a JSON file
         with open(f"./models/SVM/best_params_for_model_{self.settings['model_type']}.json", "w") as f:
-            json.dump(grid_search.best_params_, f)
+            json.dump(random_search.best_params_, f)
 
         return self.model
         
@@ -254,9 +304,11 @@ class SVMModels:
         df = self.fetch_or_read_data()
         df = self.preprocess_data(df)
         print(f'Dataframe shape:{df.shape}')
-        print(df.head(5))    
+        print(df.head(5))   
+
+        train_data, test_data = self.split_data(df) 
         
-        X_train, y_train, X_test, y_test = self.split_data(df)
+        X_train, y_train, X_test, y_test = self.extract_features_and_target(train_data, test_data, target_column='close')
         
         # Create directory
         models_directory = f'./models/SVM/'        
@@ -299,7 +351,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_hp_tuning', type=bool, default=True, help='Use hyperparameter tuning') 
     parser.add_argument('--use_cross_validation', type=bool, default=False, help='Use cross-validation')   
     parser.add_argument('--scaler_type', choices=['standard', 'minmax', 'robust', 'quantile', 'power'], 
-                        type=str, default='power', help='Select data scaler type')
+                        type=str, default='minmax', help='Select data scaler type')
     parser.add_argument('--use_fetched_data', type=bool, default=False, help='Use fetched data')    
     args = parser.parse_args()
 

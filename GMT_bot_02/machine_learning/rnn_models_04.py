@@ -8,6 +8,7 @@ import argparse
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+import joblib 
 import pickle
 import pandas as pd
 import numpy as np
@@ -118,10 +119,10 @@ class RNNModels:
             ]    
         elif model_type == 'GRU':
             model_structure = [
-                tf.keras.layers.Bidirectional(tf.keras.layers.GRU(64, return_sequences=True, kernel_regularizer=tf.keras.regularizers.l2(0.01))),
+                tf.keras.layers.Bidirectional(tf.keras.layers.GRU(256, return_sequences=True, kernel_regularizer=tf.keras.regularizers.l2(0.001))),
                 tf.keras.layers.BatchNormalization(),
-                tf.keras.layers.Dropout(0.2),
-                tf.keras.layers.Bidirectional(tf.keras.layers.GRU(32, kernel_regularizer=tf.keras.regularizers.l2(0.01))),
+                tf.keras.layers.Dropout(0.3),
+                tf.keras.layers.Bidirectional(tf.keras.layers.GRU(128, kernel_regularizer=tf.keras.regularizers.l2(0.001))),
                 tf.keras.layers.BatchNormalization(),
                 tf.keras.layers.Dense(1)
             ]
@@ -358,7 +359,9 @@ class RNNModels:
                 build_model,
                 objective='val_loss',
                 max_trials=5,
-                executions_per_trial=3,                
+                executions_per_trial=3,
+                directory=f'./models/RNN/',
+                project_name=f'{self.settings["model_type"]}_model_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}'                
             )
             tuner.search(X_train, y_train, epochs=5, validation_data=(X_test, y_test))
 
