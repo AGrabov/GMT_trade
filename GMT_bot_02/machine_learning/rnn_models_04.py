@@ -1,20 +1,23 @@
 import tensorflow as tf
-from sklearn.metrics import r2_score, explained_variance_score
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.metrics import r2_score, explained_variance_score, mean_squared_error, mean_absolute_error
+from sklearn.model_selection import KFold, train_test_split, TimeSeriesSplit
 from keras_tuner import RandomSearch
 from tensorflow import keras
-import os
+import traceback  
+import os  
 import argparse
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 import joblib 
+import json
 import pickle
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, QuantileTransformer, PowerTransformer
+
 import datetime as dt
 from data_feed_01 import BinanceFuturesData
 from ta_indicators import TAIndicators
@@ -65,6 +68,11 @@ class RNNModels:
     def split_data(self, df):
         train_size = int(0.8 * len(df))
         train_data, test_data = train_test_split(df, train_size=train_size, shuffle=False)
+        if self.settings['model_type'] == 'ARIMA':        
+            # train_data = np.log(train_data + 1e-9)
+            # test_data = np.log(test_data + 1e-9)
+            return train_data, test_data
+        
         try:
             scalers = {
                 'standard': StandardScaler(),
@@ -141,10 +149,17 @@ class RNNModels:
 
     def evaluate_model(self, model, X_test, y_test):
         loss, mae, mse = model.evaluate(X_test, y_test, verbose=2)
-        predictions = model.predict(X_test)
+        predictions = model.predict(X_test).flatten()  # Ensure it's a flat array
+        y_test = y_test.flatten()  # Ensure it's a flat array
+        
+        # Check for shape mismatch
+        if len(predictions) != len(y_test):
+            logger.error("Shape mismatch between predictions and y_test.")
+            return
         
         # Additional metrics
-        mape = np.mean(np.abs((y_test - predictions) / y_test)) * 100
+        epsilon = 1e-10  # small constant to avoid division by zero
+        mape = np.mean(np.abs((y_test - predictions) / (y_test + epsilon))) * 100
         r2 = r2_score(y_test, predictions)
         evs = explained_variance_score(y_test, predictions)
         
@@ -165,6 +180,7 @@ class RNNModels:
         plt.plot(predictions, label='Predicted')
         plt.title('Model Predictions vs True Values')
         plt.legend()
+        plt.savefig(f'./models/RNN/{self.settings["model_type"]}/Predictions.png')
         plt.show()
 
     def plot_residuals(self, y_test, predictions):
@@ -176,8 +192,10 @@ class RNNModels:
         plt.title('Residuals vs Predicted Values')
         plt.xlabel('Predicted Values')
         plt.ylabel('Residuals')
-        plt.axhline(y=0, color='r', linestyle='--')
+        plt.axhline(y=0, color='r', linestyle='--')        
+        plt.savefig(f'./models/RNN/{self.settings["model_type"]}/Residuals_vs_Predictions.png')
         plt.show()
+        
         
         # Histogram of Residuals
         plt.figure(figsize=(15, 6))
@@ -185,6 +203,7 @@ class RNNModels:
         plt.title('Histogram of Residuals')
         plt.xlabel('Residual Value')
         plt.ylabel('Frequency')
+        plt.savefig(f'./models/RNN/{self.settings["model_type"]}/Residuals_hist.png')
         plt.show()
 
     def build_and_train_arima(self, y_train):
@@ -192,6 +211,127 @@ class RNNModels:
         model_arima = ARIMA(y_train, order=(5,1,0))
         model_arima_fit = model_arima.fit()
         return model_arima_fit
+    
+    def evaluate_arima_model(self, model, y_test):
+        predictions = model.forecast(steps=len(y_test))
+        print("Predictions:", predictions)
+
+        print("Length of y_test:", len(y_test))
+        print("Length of predictions:", len(predictions))
+
+        print("Any NaN in y_test:", np.isnan(y_test).any())
+        print("Any Inf in y_test:", np.isinf(y_test).any())
+        print("Any NaN in predictions:", np.isnan(predictions).any())
+        print("Any Inf in predictions:", np.isinf(predictions).any())
+
+        mse = mean_squared_error(y_test, predictions)
+        mae = mean_absolute_error(y_test, predictions)
+        r2 = r2_score(y_test, predictions)
+        
+        return mse, mae, r2   
+
+    def check_stationarity(time_series):
+        # Perform Augmented Dickey-Fuller test:
+        print('Results of Augmented Dickey-Fuller Test:')
+        dftest = adfuller(time_series, autolag='AIC')
+        dfoutput = pd.Series(dftest[0:4], index=['Test Statistic', 'p-value', '#Lags Used', 'Number of Observations Used'])
+        for key, value in dftest[4].items():
+            dfoutput['Critical Value (%s)' % key] = value
+        print(dfoutput)
+        if dfoutput['p-value'] <= 0.05:
+            print('The series is stationary.')
+        else:
+            print('The series is not stationary.') 
+
+    def time_series_cross_validation(model, X, y, n_splits=5):
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        mse_scores = []
+        for train_index, test_index in tscv.split(X):
+            X_train, X_test = X[train_index], X[test_index]
+            y_train, y_test = y[train_index], y[test_index]
+            model.fit(X_train, y_train)
+            predictions = model.predict(start=len(X_train), end=len(X_train) + len(X_test) - 1, dynamic=False)
+            mse = mean_squared_error(y_test, predictions)
+            mse_scores.append(mse)
+        return np.mean(mse_scores)
+
+    def tune_arima(self, y_train, y_test):
+        # Initialize return variables to None
+        model_arima, best_score = None, float('inf')
+
+        print("Any NaN in y_train:", np.isnan(y_train).any())
+        print("Any Inf in y_train:", np.isinf(y_train).any())
+        # Debugging NaNs
+        print("Min in y_train:", np.min(y_train))
+        print("Max in y_train:", np.max(y_train))
+
+        # # Applying log and checking for NaNs
+        # series = np.log(y_train + 1e-9)
+        series = y_train
+        self.check_stationarity(series)
+        if np.isnan(series).any():
+            logger.error("NaN values detected in series after log transformation")
+            
+            return None, None  # or handle this appropriately        
+
+        print("Series passed to adfuller:", series)
+
+        try:
+            result = adfuller(series)
+            print('ADF Statistic: {}'.format(result[0]))
+            print('p-value: {}'.format(result[1]))
+            plot_acf(series)
+            plot_pacf(series)
+        except Exception as e:
+            logger.error(f"Error in adfuller: {e}")
+            logger.error(traceback.format_exc())  
+
+        # series = y_train      
+
+        p_values = range(0, 6) #[0, 1, 2, 4, 6, 8, 10]
+        d_values = range(0, 6)
+        q_values = range(0, 3)
+        for p in p_values:
+            for d in d_values:
+                for q in q_values:
+                    order = (p, d, q)
+                    try:
+                        model_arima = ARIMA(series, order=order)
+                        model_arima_fit = model_arima.fit()
+                        # print(model_arima_fit.summary())
+                        mse, mae, r2 = self.evaluate_arima_model(model_arima_fit, y_test)  # Assuming y_test is available
+                        if best_score is None or mse < best_score:
+                            best_score, best_cfg = mse, order                        
+                        print("Best Score:", best_score)
+                        print("MSE:", mse)
+                        
+                        logger.info(f'ARIMA{order} MSE={mse}, MAE={mae}, R2={r2}')                        
+                    except Exception as e:
+                        logger.error(f"Error while fitting ARIMA model: {e}")
+                        logger.error(traceback.format_exc())
+
+        logger.info(f'Best ARIMA{best_cfg} MSE={best_score}')
+
+        try:
+            if best_cfg is not None:
+                model_arima = ARIMA(series, order=best_cfg)
+                model_arima_fit = model_arima.fit()
+                mse, mae, r2 = self.evaluate_arima_model(model_arima_fit, y_test)
+                logger.info(f'ARIMA{best_cfg} MSE={mse}')
+                logger.info(f'ARIMA{best_cfg} MAE={mae}')
+                logger.info(f'ARIMA{best_cfg} R2={r2}')
+
+                # Save ARIMA model
+                model_path = os.path.join('./models/RNN/', 
+                                          f'{self.settings["model_type"]}/BEST_ARIMA_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl')                
+                joblib.dump(model_arima_fit, model_path)
+                logger.info(f"Saved ARIMA model to {model_path}")
+
+        except Exception as e:
+            logger.error(f"Error saving ARIMA model: {e}")
+            logger.error(traceback.format_exc())
+
+        return model_arima, best_score
     
     def build_transformer_model(self, X_train):
         def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
@@ -218,95 +358,74 @@ class RNNModels:
         model_transformer = tf.keras.Model(inputs=inputs, outputs=outputs)
 
         return model_transformer
+     
+    def tune_transformer(self, X_train, y_train, X_test, y_test):
+        epochs = self.settings.get('epochs', 5)  # Replace hardcoded epochs
+        early_stopping = tf.keras.callbacks.EarlyStopping(patience=3)
+        
+        def build_transformer_model(hp):
+            def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
+                # Normalization and Attention
+                x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(inputs)
+                x = tf.keras.layers.MultiHeadAttention(key_dim=head_size, num_heads=num_heads, dropout=dropout)(x, x)
+                x = tf.keras.layers.Dropout(dropout)(x)
+                res = x + inputs
 
-    def hyperparameter_tuning(self, X_train, y_train, X_test, y_test):
-        if self.settings['model_type'] == 'ARIMA':
-            # diff =y_train.diff().dropna()
-            log_series = np.log(y_train)
-            # season = seasonal_decompose(y_train, model='multiplicative')
-
-            series = log_series
+                # Feed Forward Part
+                x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(res)
+                kernel_regularizer = tf.keras.regularizers.l2(hp.Float('kernel_regularizer', 0.001, 0.1, step=0.01))
             
-            result = adfuller(series)
-            print('ADF Statistic: {}'.format(result[0]))
-            print('p-value: {}'.format(result[1]))
+                x = tf.keras.layers.Conv1D(filters=ff_dim, kernel_size=1, activation='relu', kernel_regularizer=kernel_regularizer)(x)
+                x = tf.keras.layers.Dropout(dropout)(x)
+                x = tf.keras.layers.Conv1D(filters=inputs.shape[-1], kernel_size=1, kernel_regularizer=kernel_regularizer)(x)
+                return x + res
 
-            plot_acf(series)
-            plot_pacf(series)
-
-            # ARIMA hyperparameter tuning
-            best_score, best_cfg = float("inf"), None
-            p_values = [0, 1, 2, 4, 6, 8, 10]
-            d_values = range(0, 3)
-            q_values = range(0, 3)
-            for p in p_values:
-                for d in d_values:
-                    for q in q_values:
-                        order = (p, d, q)
-                        try:
-                            model_arima = ARIMA(series, order=order)
-                            model_arima_fit = model_arima.fit()  # disp=0 suppresses output
-                            mse = self.evaluate_model(model_arima_fit, series)  # Evaluate on training data
-                            if mse < best_score:
-                                best_score, best_cfg = mse, order
-                            logger.info(f'ARIMA{order} MSE={mse}')
-                        except:
-                            continue
-            logger.info(f'Best ARIMA{best_cfg} MSE={best_score}')
-
-            if best_cfg is not None:
-                model_arima = ARIMA(log_series, order=best_cfg)
-                model_arima_fit = model_arima.fit()
-                
-                # Evaluate the best model
-                self.evaluate_model(model_arima_fit, y_train)  # Evaluate on training data
-
-                # Save ARIMA model
-                with open(f'./models/RNN/BEST_ARIMA_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl', 'wb') as pkl:
-                    pickle.dump(model_arima_fit, pkl)
-
-
-        elif self.settings['model_type'] == 'Transformer':
-            def build_transformer_model(hp):
-                def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
-                    # Normalization and Attention
-                    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(inputs)
-                    x = tf.keras.layers.MultiHeadAttention(key_dim=head_size, num_heads=num_heads, dropout=dropout)(x, x)
-                    x = tf.keras.layers.Dropout(dropout)(x)
-                    res = x + inputs
-
-                    # Feed Forward Part
-                    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(res)
-                    x = tf.keras.layers.Conv1D(filters=ff_dim, kernel_size=1, activation='relu')(x)
-                    x = tf.keras.layers.Dropout(dropout)(x)
-                    x = tf.keras.layers.Conv1D(filters=inputs.shape[-1], kernel_size=1)(x)
-                    return x + res
-
-                inputs = tf.keras.layers.Input(shape=(X_train.shape[1], X_train.shape[2]))
-                x = transformer_encoder(
+            inputs = tf.keras.layers.Input(shape=(X_train.shape[1], X_train.shape[2]))
+            x = transformer_encoder(
                     inputs, 
                     head_size=hp.Int('head_size', min_value=32, max_value=256, step=32),
                     num_heads=hp.Int('num_heads', min_value=1, max_value=8, step=1),
                     ff_dim=hp.Int('ff_dim', min_value=64, max_value=512, step=32),
                     dropout=hp.Float('dropout', 0.1, 0.5, step=0.1)
                 )
-                x = tf.keras.layers.GlobalAveragePooling1D()(x)
-                x = tf.keras.layers.Dense(30, activation='relu')(x)
-                x = tf.keras.layers.Dropout(0.1)(x)
-                outputs = tf.keras.layers.Dense(1)(x)
+            x = tf.keras.layers.GlobalAveragePooling1D()(x)
+            x = tf.keras.layers.Dense(30, activation='relu')(x)
+            x = tf.keras.layers.Dropout(0.1)(x)
+            outputs = tf.keras.layers.Dense(1)(x)
 
-                model_transformer = tf.keras.Model(inputs=inputs, outputs=outputs)
+            learning_rate = hp.Choice('learning_rate', [1e-2, 1e-3, 1e-4, 5e-3, 5e-4])
+        
+            model_transformer = tf.keras.Model(inputs=inputs, outputs=outputs)
+            optimizer = tf.keras.optimizers.RMSprop(learning_rate=learning_rate)
+            model_transformer.compile(optimizer=optimizer, loss='mean_squared_error', metrics=['mae', 'mse'])
 
-                return model_transformer
+            return model_transformer
 
-            tuner = RandomSearch(
+        tuner = RandomSearch(
                 build_transformer_model,
                 objective='val_loss',
                 max_trials=5,
                 executions_per_trial=3,
-            )
-            tuner.search(X_train, y_train, epochs=5, validation_data=(X_test, y_test))
+                directory='./models/RNN',
+                project_name='Transformer'
+            )      
+        
+        tuner.search(X_train, y_train, epochs=5, validation_data=(X_test, y_test), callbacks=[early_stopping])
 
+        best_model = tuner.get_best_models(num_models=1)[0]
+        best_metrics = self.evaluate_model(best_model, X_test, y_test)
+        
+        return best_model, best_metrics
+
+    def hyperparameter_tuning(self, X_train, y_train, X_test, y_test):
+        best_model = None
+        best_metrics = None
+        
+        if self.settings['model_type'] == 'ARIMA':
+            best_model, best_metrics = self.tune_arima(y_train, y_test)
+        elif self.settings['model_type'] == 'Transformer':
+            best_model, best_metrics = self.tune_transformer(X_train, y_train, X_test, y_test)
+    
         else:
             def build_model(hp):
                 model = tf.keras.models.Sequential()
@@ -361,18 +480,14 @@ class RNNModels:
                 max_trials=5,
                 executions_per_trial=3,
                 directory=f'./models/RNN/',
-                project_name=f'{self.settings["model_type"]}_model_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}'                
+                project_name=f'{self.settings["model_type"]}'                
             )
             tuner.search(X_train, y_train, epochs=5, validation_data=(X_test, y_test))
 
-        if self.settings['model_type'] != 'ARIMA':
             best_model = tuner.get_best_models(num_models=1)[0]
-            best_model_path = f'./models/RNN/Best_{self.settings["model_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5'
-            best_model.save(best_model_path)
-            logger.info(f"Best model saved to {best_model_path}")
-
-            # Evaluate the best model
-            self.evaluate_model(best_model, X_test, y_test)
+            best_metrics = self.evaluate_model(best_model, X_test, y_test)
+        
+        return best_model, best_metrics
 
     def ensemble_methods(self, X_test, y_test):
         models_directory = f'./models/RNN/'
@@ -419,14 +534,25 @@ class RNNModels:
         X_test, y_test = self.create_sequences(test_data, self.settings['seq_length'])
 
         # Create directory
-        models_directory = f'./models/RNN/'        
+        models_directory = f'./models/RNN/{self.settings["model_type"]}/'        
         if not os.path.exists(models_directory):
             os.makedirs(models_directory)
 
         # Hyperparameter Tuning
+        best_model, best_metrics = None, None
+    
         if self.settings['use_hp_tuning']:
-            self.hyperparameter_tuning(X_train, y_train, X_test, y_test)
-
+            best_model, best_metrics = self.hyperparameter_tuning(X_train, y_train, X_test, y_test)
+        
+            # Save the best model
+            if best_model is not None and self.settings['model_type'] != 'ARIMA':
+                best_model_path = f'./models/RNN/{self.settings["model_type"]}/best_{self.settings["model_type"]}_{self.settings["scaler_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5'
+                best_model.save(best_model_path)
+                # Save the best parameters to a JSON file
+                with open(f"./models/RNN/best_settings_for_{self.settings['model_type']}.json", "w") as f:
+                    json.dump(best_metrics.best_params_, f)
+                logger.info(f"Best model saved to {best_model_path}")
+                # logger.info(f"Best hyperparameters saved")
         else: 
             if self.settings['model_type'] == 'ARIMA':
                 arima_model = self.build_and_train_arima(y_train)
@@ -434,9 +560,12 @@ class RNNModels:
                 r2 = r2_score(y_test, arima_predictions)
                 logger.info(f'ARIMA R2 Score: {r2}')
                 
+                # # Save ARIMA model
+                # with open(f'./models/RNN/{self.settings["model_type"]}/ARIMA_{self.settings["scaler_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl', 'wb') as pkl:
+                #     pickle.dump(arima_model, pkl)
                 # Save ARIMA model
-                with open(f'./models/RNN/ARIMA_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl', 'wb') as pkl:
-                    pickle.dump(arima_model, pkl)
+                model_path = os.path.join(f'./models/RNN/{self.settings["model_type"]}/ARIMA_{self.settings["scaler_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.pkl')
+                joblib.dump(arima_model, model_path)
                     
             elif self.settings['model_type'] == 'Transformer':
                 transformer_model = self.build_transformer_model(X_train)
@@ -445,7 +574,7 @@ class RNNModels:
                 self.visualize_predictions(y_test, transformer_predictions)
                 
                 # Save Transformer model
-                transformer_model.save(f'./models/RNN/Transformer_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
+                transformer_model.save(f'./models/RNN/{self.settings["model_type"]}/Transformer_{self.settings["scaler_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
                 
             else:
                 self.model = self.build_model(model_type=self.settings['model_type'])
@@ -454,7 +583,7 @@ class RNNModels:
                 self.visualize_predictions(y_test, predictions)
                 
                 # Save the model
-                self.model.save(f'./models/RNN/{self.settings["model_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
+                self.model.save(f'./models/RNN/{self.settings["model_type"]}/{self.settings["model_type"]}_{self.settings["scaler_type"]}_{self.settings["target_coin"] + self.settings["base_currency"]}_{self.settings["binance_timeframe"]}.h5')
                 
            
         if self.settings['use_ensemble']:
@@ -464,7 +593,6 @@ class RNNModels:
                 ensemble_predictions = self.ensemble_methods(X_test, y_test)
                 if ensemble_predictions is not None:
                     self.visualize_predictions(y_test, ensemble_predictions)
-
 
 if __name__ == '__main__':
     # Parse command-line arguments
@@ -478,25 +606,18 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    model_type = args.model_type    
-    scaler_type = args.scaler_type
-    use_hp_tuning = args.use_hp_tuning
-    use_ensemble = args.use_ensemble
-    use_fetched_data = args.use_fetched_data
-    seg_lenght = args.seq_length
-
     SETTINGS = {
         'target_coin': 'GMT',
         'base_currency': 'USDT',
         'binance_timeframe': '30m',
         'start_date': dt.datetime.strptime("2023-05-01 00:00:00", "%Y-%m-%d %H:%M:%S"),
         'end_date': dt.datetime.strptime("2023-08-01 00:00:00", "%Y-%m-%d %H:%M:%S"),
-        'use_fetched_data': use_fetched_data,
-        'seq_length': seg_lenght,
-        'model_type': model_type, # Dense, LSTM, GRU, Transformer, ARIMA
-        'scaler_type': scaler_type,
-        'use_hp_tuning': use_hp_tuning,
-        'use_ensemble': use_ensemble,
+        'use_fetched_data': args.use_fetched_data,
+        'seq_length': args.seq_length,
+        'model_type': args.model_type, # Dense, LSTM, GRU, Transformer, ARIMA
+        'scaler_type': args.scaler_type,
+        'use_hp_tuning': args.use_hp_tuning,
+        'use_ensemble': args.use_ensemble,
     }
     rnn_models = RNNModels(SETTINGS)
     rnn_models.run()

@@ -11,6 +11,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, e
 import os
 from bayes_opt import BayesianOptimization
 from pyswarm import pso
+import traceback
 
 import argparse
 from data_feed_01 import BinanceFuturesData
@@ -41,7 +42,7 @@ dataname = (f'{target_coin}/{base_currency}')
 parser = argparse.ArgumentParser(description='Model trading with the optimized "best_params".')
 parser.add_argument('--model_type', choices=['DQN', 'DDPG', 'PPO', 'A2C', 'SAC', 'TD3'], type=str, default='SAC', help='Select model type')
 parser.add_argument('--param_optimization', type=bool, default=True, help='Hyper parameters optimization')
-parser.add_argument('--hp_optimizer_type', choices=['optuna', 'random', 'grid', 'bayesian', 'PSO'], type=str, default='random', help='Select data scaler type')
+parser.add_argument('--hp_optimizer_type', choices=['optuna', 'random', 'grid', 'bayesian', 'PSO'], type=str, default='bayesian', help='Select data scaler type')
 parser.add_argument('--use_fetched_data', type=bool, default=False, help='Use fetched data')
 
 args = parser.parse_args()
@@ -52,12 +53,11 @@ model_type = args.model_type
 hp_optimizer_type = args.hp_optimizer_type
 
 def bayesian_objective(df, model_type, pbounds):
-    return objective_function(df, model_type, pbounds, minimize=False)
+    return objective_function(df, model_type, params=pbounds, minimize=False)
 
-def pso_objective(df, model_type, x):
-    return objective_function(df, model_type, x, minimize=True)
+def pso_objective(df, model_type):
+    return objective_function(df, model_type, minimize=True)
 
-# This function optimizes hyperparameters using PSO
 def objective_function(df, model_type, params, minimize=False):
     # Unpack parameters
     (learning_rate, gamma, ent_coef, n_steps, batch_size, buffer_size, 
@@ -111,11 +111,13 @@ def objective_function(df, model_type, params, minimize=False):
             model.learn(total_timesteps=len(df), progress_bar=True)        
         except Exception as e:
             logger.error(f"Error during model training: {e}")
+            logger.error(traceback.format_exc())  
     else:
         try:
             model.learn(total_timesteps=len(df)*5, progress_bar=True)        
         except Exception as e:
             logger.error(f"Error during model training: {e}")
+            logger.error(traceback.format_exc())  
         
     # Evaluate the trained model on a validation set and return the performance    
     obs = env.reset()
@@ -164,7 +166,8 @@ if use_fetched_data:
         df = BinanceFuturesData.fetch_data(symbol=symbol, startdate=start_date, enddate=end_date, binance_timeframe=binance_timeframe)
         print('Fteching data...')
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        logger.error(f"Error fetching data: {e}")
+        logger.error(traceback.format_exc())  
 
 else:
     csv_name = 'GMTUSDT - 30m_(since_2022-03-15).csv' #GMTUSDT - 30m_(since_2022-03-15).csv
@@ -176,7 +179,8 @@ else:
         # Read the CSV file using more efficient parameters
         df = pd.read_csv(csv_path, header=None, names=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     except Exception as e:
-        print(f"Error reading CSV file: {e}")
+        logger.error(f"Error reading CSV file: {e}")
+        logger.error(traceback.format_exc())  
 
     # Create a new DataFrame without empty rows
     df = df.dropna()
@@ -219,39 +223,48 @@ if param_optimization:
                 json.dump(study.best_params, f)
 
         except Exception as e:
-            print(f"Error during model training or saving: {e}")
+            logger.error(f"Error during model training or saving: {e}")
+            logger.error(traceback.format_exc())  
 
     elif args.hp_optimizer_type == 'bayesian':
-        optimizer = BayesianOptimization(
-            f=bayesian_objective(df, model_type),
-            pbounds={
-            'learning_rate' : (1e-4, 1e-2),
-            'gamma': (0.85, 0.999),
-            'ent_coef' : (1e-6, 1e-1),
-            'n_steps' : (16, 2048),
-            'batch_size' : (16, 512),
-            'buffer_size' : (10000, 1000000),
-            'exploration_fraction' : (0.1, 1.0),
-            'exploration_final_eps' : (0.01, 0.5),
-            'tau' : (0.001, 0.1),
-            'layer_1' : (32, 256),
-            'layer_2' : (32, 256),            
-            'clip_range' : (0.1, 0.4),
-            'learning_starts' : (0, 10000),
-            'target_update_interval' : (1, 1000),
-            'gradient_steps' : (1, 100)
-            },
-            random_state=1,
-        )
-        if model_type in ['DDPG', 'DQN', 'TD3', 'SAC']:
-            optimizer.maximize(init_points=5, n_iter=20)
-        else:
-            optimizer.maximize(init_points=10, n_iter=50)
+        try:
+            optimizer = BayesianOptimization(
+                f=bayesian_objective(df, model_type,
+                pbounds={
+                'learning_rate' : (1e-4, 1e-2),
+                'gamma': (0.85, 0.999),
+                'ent_coef' : (1e-6, 1e-1),
+                'n_steps' : (16, 2048),
+                'batch_size' : (16, 512),
+                'buffer_size' : (10000, 1000000),
+                'exploration_fraction' : (0.1, 1.0),
+                'exploration_final_eps' : (0.01, 0.5),
+                'tau' : (0.001, 0.1),
+                'layer_1' : (32, 256),
+                'layer_2' : (32, 256),            
+                'clip_range' : (0.1, 0.4),
+                'learning_starts' : (0, 10000),
+                'target_update_interval' : (1, 1000),
+                'gradient_steps' : (1, 100)
+                }),
+                random_state=1,
+            )
+            if model_type in ['DDPG', 'DQN', 'TD3', 'SAC']:
+                optimizer.maximize(init_points=5, n_iter=20)
+            else:
+                optimizer.maximize(init_points=10, n_iter=50)
+        except Exception as e:
+            logger.error(f"Error during Bayesian tunning: {e}")
+            logger.error(traceback.format_exc())
 
     elif args.hp_optimizer_type == 'PSO':
-        lb = [1e-4, 0.85, 1e-6, 16, 16, 10000, 0.1, 0.01, 0.001, 32, 32, 0.1, 0, 1, 1]  # Lower bounds
-        ub = [1e-2, 0.999, 1e-1, 2048, 512, 1000000, 0.5, 0.5, 0.1, 256, 256, 0.4, 10000, 1000, 100]  # Upper bounds
-        xopt, fopt = pso(pso_objective(df, model_type), lb, ub)
+        try:
+            lb = [1e-4, 0.85, 1e-6, 16, 16, 10000, 0.1, 0.01, 0.001, 32, 32, 0.1, 0, 1, 1]  # Lower bounds
+            ub = [1e-2, 0.999, 1e-1, 2048, 512, 1000000, 0.5, 0.5, 0.1, 256, 256, 0.4, 10000, 1000, 100]  # Upper bounds
+            xopt, fopt = pso(pso_objective(df, model_type), lb, ub)
+        except Exception as e:
+            logger.error(f"Error during PSO tunning: {e}")
+            logger.error(traceback.format_exc())
     else:
         print("Invalid optimizer type")
 else:
@@ -314,7 +327,11 @@ else:
         print(f"Learning {model_type} model...")  
         model.learn(total_timesteps=len(df)*5, progress_bar=True)
         logger.info(f"Learning {model_type} model finished.")
+    except Exception as e:
+        logger.error(f"Error during model training: {e}")
+        logger.error(traceback.format_exc())
 
+    try:
         # After training the model, add the following code to compute evaluation metrics:
         obs = env.reset()
         true_rewards = []
@@ -347,7 +364,20 @@ else:
         shap_values = explainer.shap_values(obs)
         shap.summary_plot(shap_values, obs)
 
-        # Save the agent
-        model.save(f"/models/{model_type}_trade_{symbol}_{binance_timeframe}")
     except Exception as e:
-        print(f"Error during model training or saving: {e}")
+        logger.error(f"Error during SHAP evaluation: {e}")
+        logger.error(traceback.format_exc())
+
+    try:
+        # Create directory
+        models_directory = f'./models/{model_type}/'        
+        if not os.path.exists(models_directory):
+            os.makedirs(models_directory)
+        # Save the agent
+        model_filename = f'{models_directory}{model_type}_trade_{symbol}_{binance_timeframe}'
+        model.save(model_filename)
+        logger.info(f"Model saved: {model_filename}")
+
+    except Exception as e:
+        logger.error(f"Error during model saving: {e}")
+        logger.error(traceback.format_exc())  
