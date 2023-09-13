@@ -23,8 +23,7 @@ from sklearn.metrics import (explained_variance_score, mean_absolute_error,
                              mean_absolute_percentage_error,
                              mean_squared_error, r2_score)
 
-from stable_baselines3 import A2C, DDPG, DQN, PPO, SAC, TD3
-from stable_baselines3 import HER, HerReplayBuffer 
+from stable_baselines3 import A2C, DDPG, DQN, PPO, SAC, TD3, HER, HerReplayBuffer  
 from data_normalizer import CryptoDataNormalizer
 
 logging.basicConfig(level=logging.INFO)
@@ -33,8 +32,20 @@ logger = logging.getLogger(__name__)
 class RLM_Models:
     def __init__(self, settings):
         self.settings = settings
+        self.models_dir = f'./models/RLM/{self.settings["model_type"]}/'
         self.model = None
-        self.params = {}
+        self.env = None
+        self.data = None  # You can replace this with actual data initialization
+        self.models_params = {
+            "a2c": None,
+            "ppo": None,
+            "dqn": None,
+            "sac": None,
+            "td3": None,
+            "ddpg": None,
+            "her": None
+        }
+        self.results = {}
         self.normalizer = CryptoDataNormalizer()
 
     def fetch_or_read_data(self):
@@ -61,126 +72,248 @@ class RLM_Models:
             df = df.set_index('timestamp')
         return df
 
-    def get_params(self):
-        pass
+    def get_existing_best_params(self):        
+        if os.path.exists(self.models_dir):
+            for filename in os.listdir(self.models_dir):
+                if filename.endswith('.json'):
+                    file_path = os.path.join(self.models_dir, filename)
+                    if 'params' in filename:
+                        with open(filename, 'r') as f:
+                            best_params = json.load(f)
+                            logger.info(f'Loaded best params from: {file_path}')
+                            return best_params
+                else:                    
+                    logger.info(f'No best params found for: {self.settings["model_type"]}')
+                    return None
 
-    def get_a2c_model(self, df):        
-        action_space = spaces.MultiDiscrete([5])
-        ddqn = False        
-        params_ranges = {            
-            # 'learning_rate': float, #| Schedule = 0.0007,
-            # 'n_steps': int = 5,
-            # 'gamma': float = 0.99,
-            # 'gae_lambda': float = 1,
-            # 'ent_coef': float = 0,
-            # 'vf_coef': float = 0.5,
-            # 'max_grad_norm': float = 0.5,
-            # 'rms_prop_eps': float = 0.00001,
-            # 'use_rms_prop': bool = True,
-            # 'use_sde': bool = False,
-            # 'sde_sample_freq': int = -1,
-            # 'normalize_advantage': bool = False,
-            # 'stats_window_size': int = 100,
-            # 'tensorboard_log': str | None = None,
-            # 'policy_kwargs': Dict[str, Any] | None = None,
+    def get_a2c_params(self):
+        self.models_params["a2c"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "n_steps": [1, 5, 10, 20, 50],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "gae_lambda": [(0.9, 1.0), "uniform"],
+            "ent_coef": [(0.0, 0.1), "uniform"],
+            "vf_coef": [(0.1, 1.0), "uniform"],
+            "max_grad_norm": [(0.1, 1.0), "uniform"],
+            "rms_prop_eps": [(1e-6, 1e-4), "log-uniform"],
+            "use_rms_prop": [True, False],
+            "use_sde": [True, False],
+            "sde_sample_freq": [-1, 1, 5, 10], 
+            "normalize_advantage": [True, False],
+            "stats_window_size": [10, 50, 100, 200],
+            "layer_1_size": [(32, 256), "log-uniform"],
+            "layer_2_size": [(32, 512), "log-uniform"],
+            "policy_kwargs": [
+                        {"net_arch": [x, y], "activation_fn": fn} 
+                        for x in np.arange(32, 257, 32) 
+                        for y in np.arange(32, 513, 32) 
+                        for fn in ["ReLU", "Tanh"]
+                    ],
         }
-        a2c_env = TradeEnv(df, action_space=action_space, 
-                           live=False, ddqn=ddqn,
-                           observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
-        a2c_model = A2C('MlpPolicy', a2c_env, verbose=2 if self.settings['debug'] else 0, params=params_ranges)
 
-        return a2c_model, a2c_env
-
-    def get_ppo_model(self, df):
-        action_space = spaces.MultiDiscrete([5])
-        ddqn = False                
-        params_ranges = {            
-            'learning_rate': "float | Schedule = 0.0003",
-            'n_steps': "int = 2048",
-            'batch_size': "int = 64",
-            'n_epochs': "int = 10",
-            'gamma': "float = 0.99",
-            'gae_lambda': "float = 0.95",
-            'clip_range': "float | Schedule = 0.2",
-            'clip_range_vf': "float | Schedule | None = None",
-            'normalize_advantage': "bool = True",
-            'ent_coef': "float = 0",
-            'vf_coef': "float = 0.5",
-            'max_grad_norm': "float = 0.5",
-            'use_sde': "bool = False",
-            'sde_sample_freq': "int = -1",
-            'target_kl': "float | None = None",            
-            'policy_kwargs': "Dict[str, Any] | None = None",            
-            'seed': "int | None = None",            
-            '_init_setup_model': "bool = True"
+    def get_ppo_params(self):
+        self.models_params["ppo"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],            
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "n_steps": [128, 256, 512, 1024, 2048],
+            "batch_size": [64, 128, 256, 512],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "gae_lambda": [(0.9, 1.0), "uniform"],
+            "ent_coef": [(0.0, 0.1), "uniform"],
+            "vf_coef": [(0.1, 1.0), "uniform"],
+            "max_grad_norm": [(0.1, 1.0), "uniform"],
+            "clip_range": [(0.1, 0.3), "uniform"],
+            "clip_range_vf": [None, (0.1, 0.3), "uniform"],
+            "lam": [(0.8, 1.0), "uniform"],
+            "policy_kwargs": [
+                {"net_arch": [x, y], "activation_fn": fn} 
+                for x in np.arange(32, 257, 32) 
+                for y in np.arange(32, 513, 32) 
+                for fn in ["ReLU", "Tanh"]
+            ],
         }
-        ppo_env = TradeEnv(df, action_space=action_space, 
-                           live=False, ddqn=ddqn, 
-                           observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
-                
-        ppo_model = PPO('MlpPolicy', ppo_env, verbose=2 if self.settings['debug'] else 0, params=params_ranges)
 
-        return ppo_model, ppo_env
-    
-    def get_ddpg_model(self, df):
-        pass
+    def get_dqn_params(self):
+        self.models_params["dqn"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],
+            # "env": ["path/to/your/custom/env"],  # Replace with the actual path to your custom environment
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "buffer_size": [10000, 50000, 100000],
+            "learning_starts": [1000, 5000, 10000],
+            "batch_size": [32, 64, 128, 256],
+            "tau": [(0.01, 0.1), "uniform"],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "train_freq": [1, 4, 8],
+            "gradient_steps": [1, 4, 8],
+            "n_episodes_rollout": [-1, 100, 200],
+            "policy_kwargs": [
+                {"net_arch": [x, y], "activation_fn": fn} 
+                for x in np.arange(32, 257, 32) 
+                for y in np.arange(32, 513, 32) 
+                for fn in ["ReLU", "Tanh"]
+            ],
+        }
 
-    def get_dqn_model(self, df):
-        pass
+    def get_ddpg_params(self):
+        self.models_params["ddpg"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],
+            # "env": ["path/to/your/custom/env"],  # Replace with the actual path to your custom environment
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "buffer_size": [10000, 50000, 100000],
+            "learning_starts": [1000, 5000, 10000],
+            "batch_size": [64, 128, 256],
+            "tau": [(0.01, 0.1), "uniform"],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "train_freq": [100, 200, 500],
+            "gradient_steps": [100, 200, 500],
+            "action_noise": ["NormalActionNoise", "OrnsteinUhlenbeckActionNoise"],  # You can add more noise types as needed
+            "noise_std": [(0.1, 0.5), "uniform"],
+            "optimize_memory_usage": [True, False],
+            "policy_kwargs": [
+                {"net_arch": [x, y], "activation_fn": fn} 
+                for x in np.arange(32, 257, 32) 
+                for y in np.arange(32, 513, 32) 
+                for fn in ["ReLU", "Tanh"]
+            ],
+        }
 
-    def get_td3_model(self, df):
-        pass
+    def get_sac_params(self):
+        self.models_params["sac"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],
+            # "env": ["path/to/your/custom/env"],  # Replace with the actual path to your custom environment
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "buffer_size": [10000, 50000, 100000],
+            "learning_starts": [1000, 5000, 10000],
+            "batch_size": [64, 128, 256],
+            "tau": [(0.01, 0.1), "uniform"],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "train_freq": [1, 5, 10],
+            "gradient_steps": [1, 5, 10],
+            "ent_coef": ["auto", (0.01, 0.1), "uniform"],
+            "target_entropy": ["auto", (-1.0, 1.0), "uniform"],
+            "action_noise": ["NormalActionNoise", "OrnsteinUhlenbeckActionNoise"],  # You can add more noise types as needed
+            "noise_std": [(0.1, 0.5), "uniform"],
+            "use_sde": [True, False],
+            "sde_sample_freq": [-1, 1, 5, 10],
+            "optimize_memory_usage": [True, False],
+            "policy_kwargs": [
+                {"net_arch": [x, y], "activation_fn": fn} 
+                for x in np.arange(32, 257, 32) 
+                for y in np.arange(32, 513, 32) 
+                for fn in ["ReLU", "Tanh"]
+            ],
+        }
 
-    def get_sac_model(self, df):
-        pass
+    def get_td3_params(self):
+        self.models_params["td3"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],
+            # "env": ["path/to/your/custom/env"],  # Replace with the actual path to your custom environment
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "buffer_size": [10000, 50000, 100000],
+            "learning_starts": [1000, 5000, 10000],
+            "batch_size": [64, 128, 256],
+            "tau": [(0.01, 0.1), "uniform"],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "train_freq": [100, 200, 500],
+            "gradient_steps": [100, 200, 500],
+            "action_noise": ["NormalActionNoise", "OrnsteinUhlenbeckActionNoise"],  # You can add more noise types as needed
+            "noise_std": [(0.1, 0.5), "uniform"],
+            "policy_delay": [1, 2],
+            "target_policy_noise": [(0.1, 0.3), "uniform"],
+            "target_noise_clip": [(0.1, 0.5), "uniform"],
+            "optimize_memory_usage": [True, False],
+            "policy_kwargs": [
+                {"net_arch": [x, y], "activation_fn": fn} 
+                for x in np.arange(32, 257, 32) 
+                for y in np.arange(32, 513, 32) 
+                for fn in ["ReLU", "Tanh"]
+            ],
+        }
 
-    def train_rlm_model(self, df, params):
+    def get_her_params(self):
+        self.models_params["her"] = {
+            "policy": ["MlpPolicy", "CnnPolicy"],
+            # "env": ["path/to/your/custom/env"],  # Replace with the actual path to your custom environment
+            "goal_selection_strategy": ["final", "future", "episode"],
+            "online_sampling": [True, False],
+            "learning_rate": [(1e-5, 1e-2), "log-uniform"],
+            "buffer_size": [10000, 50000, 100000],
+            "learning_starts": [1000, 5000, 10000],
+            "batch_size": [64, 128, 256],
+            "gamma": [(0.9, 0.9999), "uniform"],
+            "train_freq": [100, 200, 500],
+            "gradient_steps": [100, 200, 500],
+            "n_sampled_goal": [4, 5, 10],
+            "optimize_memory_usage": [True, False],
+            "policy_kwargs": [
+                {"net_arch": [x, y], "activation_fn": fn} 
+                for x in np.arange(32, 257, 32) 
+                for y in np.arange(32, 513, 32) 
+                for fn in ["ReLU", "Tanh"]
+            ],
+        }
+
+    def get_model_and_env(self, params=None):
+        policy = 'MlpPolicy' if params is None else params['policy']
         if self.settings['model_type'] == 'A2C':
             action_space = spaces.MultiDiscrete([5])
-            ddqn = False
-            env = TradeEnv(df, action_space=action_space, ddqn=ddqn, live=False, 
+            ddqn = False            
+            env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
                            debug=self.settings['debug'])
-            model = A2C('MlpPolicy', env, params=params)
+            model = A2C(policy, env, params=params, verbose=2 if self.settings['debug'] else 1) 
             
         elif self.settings['model_type'] == 'PPO':
             action_space = spaces.MultiDiscrete([5])
             ddqn = False
-            env = TradeEnv(df, action_space=action_space, ddqn=ddqn, live=False, 
+            env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
                            debug=self.settings['debug'])
-            model = PPO('MlpPolicy', env, params=params)
+            model = PPO(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
 
         elif self.settings['model_type'] == 'DQN':
             action_space = spaces.Discrete(5)
-            env = TradeEnv(df, action_space=action_space, ddqn=ddqn, live=False, 
+            ddqn = False
+            env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
-            model = DQN('MlpPolicy', env, params=params)
+                           debug=self.settings['debug'], ddqn=ddqn)
+            model = DQN(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
             
         elif self.settings['model_type'] in ['DDPG', 'SAC', 'TD3']:
             action_space = spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
             ddqn = True
-            env = TradeEnv(df, action_space=action_space, ddqn=ddqn, live=False, 
+            env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
                            debug=self.settings['debug'])
             if self.settings['model_type'] == 'DDPG':
-                model = DDPG('MlpPolicy', env, params=params)
+                model = DDPG(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
             elif self.settings['model_type'] == 'SAC':
-                model = SAC('MlpPolicy', env, params=params)
+                model = SAC(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
             elif self.settings['model_type'] == 'TD3':
-                model = TD3('MlpPolicy', env, params=params)
+                model = TD3(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
 
-        if self.settings['model_type'] in ['DDPG', 'SAC', 'TD3']:
-            model.learn(total_timesteps=len(df), progress_bar=True)            
-        elif self.settings['model_type'] in ['A2C', 'PPO', 'DQN']:
-            model.learn(total_timesteps=len(df)*5, progress_bar=True)
+        elif self.settings['model_type'] == 'HER':
+            action_space = spaces.Discrete(5)
+            ddqn = False
+            env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
+                           observation_window_length=self.settings['observation_window_length'], 
+                           debug=self.settings['debug'])
+            model = HER(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
 
-        return model, env
+        return model, env    
     
-    def evaluate_rlm_model(self, df, model, env):
+
+    def train_rlm_model(self, model):
+        
+        if self.settings['model_type'] in ['DDPG', 'SAC', 'TD3']:
+            model.learn(total_timesteps=len(self.data), progress_bar=True)            
+        elif self.settings['model_type'] in ['A2C', 'PPO', 'DQN', 'HER']:
+            model.learn(total_timesteps=len(self.data)*5, progress_bar=True)
+
+        return model
+    
+    def evaluate_rlm_model(self, model, env):
         obs = env.reset()
         true_rewards = []
         predicted_rewards = []
@@ -200,20 +333,33 @@ class RLM_Models:
         logger.info(f'MAE: {mae}, MSE: {mse}')
         logger.info(f'MAPE: {mape}, R2: {r2}')
         logger.info(f'Explained Variance: {explained_variance}')
+
+        self.get_shap(obs)
+
+        self.results = {
+            'MAE': mae,
+            'MSE': mse,
+            'MAPE': mape,
+            'R2': r2,
+            'Explained Variance': explained_variance,
+
+        }
         
-        return true_rewards, predicted_rewards, obs
+        return true_rewards, predicted_rewards
     
-    def get_shap(self, model, obs):
+    def get_shap(self, obs):
         if self.settings['model_type'] == 'DQN':
-            explainer = shap.Explainer(model.q_net)
+            explainer = shap.Explainer(self.model.q_net)
         elif self.settings['model_type'] in ['A2C', 'PPO']:
-            explainer = shap.Explainer(model.policy.vf_net)
+            explainer = shap.Explainer(self.model.policy.vf_net)
         elif self.settings['model_type'] in ['DDPG', 'TD3', 'SAC']:
-            explainer = shap.Explainer(model.critic)
+            explainer = shap.Explainer(self.model.critic)
 
         shap_values = explainer.shap_values(obs)
         print(shap_values)
-        shap.summary_plot(shap_values, obs)
+        fig = shap.summary_plot(shap_values, obs)
+        plt.savefig(self.models_dir + 'shap.png')
+        
 
     def visualize_predictions(self):
         pass
@@ -225,38 +371,40 @@ class RLM_Models:
     def cross_validate_rlm(self):
         pass
 
-    def hp_tuning(self, df):
+    def hp_tuning(self):
         pass    
 
-    def save_model(self, model):
-        models_directory = f'./models/RLM/{self.settings["model_type"]}/'        
-        if not os.path.exists(models_directory):
-            os.makedirs(models_directory)
+    def save_model(self, model):        
+        if not os.path.exists(self.models_dir):
+            os.makedirs(self.models_dir)
         # Save the agent
-        model_filename = f'{models_directory}{self.settings["model_type"]}_trade_{self.settings["symbol"]}_{self.settings["binance_timeframe"]}.zip'
+        model_filename = f'{self.models_dir}{self.settings["model_type"]}_trade_{self.settings["symbol"]}_{self.settings["binance_timeframe"]}.zip'
         model.save(model_filename)
         logger.info(f"Model saved: {model_filename}")
 
-    def save_params(self, params):
-        params_filename = f'./params/RLM/{self.settings["model_type"]}/'        
-        if not os.path.exists(params_filename):
-            os.makedirs(params_filename)
+    def save_params(self, params):        
+        if not os.path.exists(self.models_dir):
+            os.makedirs(self.models_dir)
         # Save the agent
-        params_filename = f'{params_filename}{self.settings["model_type"]}_trade_{self.settings["symbol"]}_{self.settings["binance_timeframe"]}.json'
+        params_filename = f'{self.models_dir}best_params_for_{self.settings["model_type"]}_trade_{self.settings["symbol"]}_{self.settings["binance_timeframe"]}.json'
         with open(params_filename, 'w') as f:
             json.dump(params, f)
         logger.info(f"Params saved: {params_filename}")
         
     def run(self):
-        df = self.fetch_or_read_data()
-        params = self.get_params()
-        model, env = self.train_rlm_model(df, params)
-        true_rewards, predicted_rewards, obs = self.evaluate_rlm_model(df, model, env)
-        self.get_shap(model, obs)
-        self.save_params(params)
-        self.save_model(model)
-
+        best_params = None
+        self.data = self.fetch_or_read_data()
+        if self.settings['use_hp_tuning']:
+            best_params = self.hp_tuning()
+        else:
+            best_params = self.get_existing_best_params()
+        self.model, self.env = self.get_model_and_env(best_params)
+        self.model = self.train_rlm_model(best_params)
+        true_rewards, predicted_rewards = self.evaluate_rlm_model(self.model, self.env)
         
+        if best_params is not None:
+            self.save_params(best_params)
+        self.save_model(self.model)   
         
 
 
@@ -265,7 +413,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Reinforcement learning models training and tuning.')
     parser.add_argument('--model_type', choices=['A2C', 'DDPG', 'DQN', 'PPO', 'SAC', 'TD3'], 
                         type=str, default='A2C', help='Select model type from A2C, DDPG, DQN, PPO, SAC, TD3')
-    parser.add_argument('--use_hp_tuning', type=bool, default=True, help='Use hyperparameter tuning') 
+    parser.add_argument('--use_hp_tuning', type=bool, default=True, help='Use hyperparameter tuning')
+    parser.add_argument('--optimizer_type', choices=['PSO', 'random', 'bayesian', 'optuna'], 
+                                                type=str, default='PSO', help='Select optimizer type') 
     parser.add_argument('--use_cross_validation', type=bool, default=False, help='Use cross-validation')    
     parser.add_argument('--use_fetched_data', type=bool, default=False, help='Use fetched data')    
     args = parser.parse_args()
@@ -279,7 +429,10 @@ if __name__ == '__main__':
         'use_fetched_data': args.use_fetched_data,        
         'model_type': args.model_type, #         
         'use_hp_tuning': args.use_hp_tuning,
+        'optimizer_type': args.optimizer_type,
         'use_cross_validation': args.use_cross_validation,
+        'observation_window_length': 48*7,
+        'debug': True
         
     }
     svm_models = RLM_Models(SETTINGS)
