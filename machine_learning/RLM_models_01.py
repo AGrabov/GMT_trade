@@ -11,13 +11,13 @@ import matplotlib.pyplot as plt
 import shap
 from bayes_opt import BayesianOptimization
 from data_feed_01 import BinanceFuturesData
-from machine_learning.ta_indicators import TAIndicators
 from gym import spaces
 from env_001 import TradeEnv
 from numba import jit
 from optuna import Trial, create_study
-from pyswarm import pso
-from scipy.stats import randint, uniform
+from sklearn.model_selection import ParameterSampler
+from scipy.stats.distributions import uniform, randint, loguniform
+
 from functools import partial
 from sklearn.metrics import (explained_variance_score, mean_absolute_error,
                              mean_absolute_percentage_error,
@@ -86,6 +86,7 @@ class RLM_Models:
                     logger.info(f'No best params found for: {self.settings["model_type"]}')
                     return None
 
+            
     def get_a2c_params(self):
         self.models_params["a2c"] = {
             "policy": ["MlpPolicy", "CnnPolicy"],
@@ -101,9 +102,7 @@ class RLM_Models:
             "use_sde": [True, False],
             "sde_sample_freq": [-1, 1, 5, 10], 
             "normalize_advantage": [True, False],
-            "stats_window_size": [10, 50, 100, 200],
-            "layer_1_size": [(32, 256), "log-uniform"],
-            "layer_2_size": [(32, 512), "log-uniform"],
+            "stats_window_size": [10, 50, 100, 200],            
             "policy_kwargs": [
                         {"net_arch": [x, y], "activation_fn": fn} 
                         for x in np.arange(32, 257, 32) 
@@ -254,72 +253,109 @@ class RLM_Models:
             ],
         }
 
+    def get_params(self):
+        if self.settings['model_type'] == 'A2C':
+            self.get_a2c_params()
+        elif self.settings['model_type'] == 'PPO':
+            self.get_ppo_params()
+        elif self.settings['model_type'] == 'DQN':
+            self.get_dqn_params()
+        elif self.settings['model_type'] == 'SAC':
+            self.get_sac_params()
+        elif self.settings['model_type'] == 'TD3':
+            self.get_td3_params()
+        elif self.settings['model_type'] == 'DDPG':
+            self.get_ddpg_params()
+        elif self.settings['model_type'] == 'HER':
+            self.get_her_params()
+            
     def get_model_and_env(self, params=None):
-        policy = 'MlpPolicy' if params is None else params['policy']
+        policy = 'MlpPolicy' if params is None or params.get('policy') is None else params['policy']
+
+        if self.settings['use_hp_tuning'] and self.settings['optimizer_type'] == "bayesian":
+
+            # Assuming activation_fn_mapping is defined earlier in your script
+            activation_fn_mapping = {
+                # Your mapping here, for example:
+                "relu": "Relu Activation Function",
+                "sigmoid": "Sigmoid Activation Function"
+            }
+
+            # Extract net_arch and activation_fn values from params
+            net_arch_x = params.pop('net_arch_x')
+            net_arch_y = params.pop('net_arch_y')
+            activation_fn = activation_fn_mapping[params.pop('activation_fn')]
+
+            # Create policy_kwargs dictionary
+            policy_kwargs = {
+                "net_arch": [net_arch_x, net_arch_y],
+                "activation_fn": activation_fn  # Now activation_fn will have the correct string value
+            }
+
+            # Add policy_kwargs to params
+            params['policy_kwargs'] = policy_kwargs
+            
         if self.settings['model_type'] == 'A2C':
             action_space = spaces.MultiDiscrete([5])
             ddqn = False            
             env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
-            model = A2C(policy, env, params=params, verbose=2 if self.settings['debug'] else 1) 
+                           )
+            model = A2C(policy, env, verbose=2 if self.settings['debug'] else 1, **params) 
             
         elif self.settings['model_type'] == 'PPO':
             action_space = spaces.MultiDiscrete([5])
             ddqn = False
             env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
-            model = PPO(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
+                           )
+            model = PPO(policy, env, verbose=2 if self.settings['debug'] else 1, **params)
 
         elif self.settings['model_type'] == 'DQN':
             action_space = spaces.Discrete(5)
             ddqn = False
             env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
                            observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'], ddqn=ddqn)
-            model = DQN(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
+                           )
+            model = DQN(policy, env, verbose=2 if self.settings['debug'] else 1, **params)
             
         elif self.settings['model_type'] in ['DDPG', 'SAC', 'TD3']:
             action_space = spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
             ddqn = True
             env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
-                           observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
+                        observation_window_length=self.settings['observation_window_length'], 
+                        )
             if self.settings['model_type'] == 'DDPG':
-                model = DDPG(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
+                model = DDPG(policy, env, verbose=2 if self.settings['debug'] else 1, **params)
             elif self.settings['model_type'] == 'SAC':
-                model = SAC(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
+                model = SAC(policy, env, verbose=2 if self.settings['debug'] else 1, **params)
             elif self.settings['model_type'] == 'TD3':
-                model = TD3(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
+                model = TD3(policy, env, verbose=2 if self.settings['debug'] else 1, **params)
 
-        elif self.settings['model_type'] == 'HER':
-            action_space = spaces.Discrete(5)
-            ddqn = False
-            env = TradeEnv(self.data, action_space=action_space, ddqn=ddqn, live=False, 
-                           observation_window_length=self.settings['observation_window_length'], 
-                           debug=self.settings['debug'])
-            model = HER(policy, env, params=params, verbose=2 if self.settings['debug'] else 1)
+        else:
+            raise ValueError(f"Unknown model type: {self.settings['model_type']}")
 
-        return model, env    
+        return model, env
     
 
     def train_rlm_model(self, model):
         
         if self.settings['model_type'] in ['DDPG', 'SAC', 'TD3']:
             model.learn(total_timesteps=len(self.data), progress_bar=True)            
-        elif self.settings['model_type'] in ['A2C', 'PPO', 'DQN', 'HER']:
-            model.learn(total_timesteps=len(self.data)*5, progress_bar=True)
+        elif self.settings['model_type'] in ['A2C', 'PPO', 'DQN']:
+            model.learn(total_timesteps=len(self.data)*2, progress_bar=True)
 
         return model
     
     def evaluate_rlm_model(self, model, env):
         obs = env.reset()
+        total_reward = 0
         true_rewards = []
         predicted_rewards = []
-        for _ in range(5000):
+        for _ in range(3000):
             action, _states = model.predict(obs)
             obs, reward, done, info = env.step(action)
+            total_reward += reward
             true_rewards.append(reward)
             predicted_rewards.append(model.predict(obs)[0])
             if done:
@@ -332,9 +368,7 @@ class RLM_Models:
         explained_variance = explained_variance_score(true_rewards, predicted_rewards)
         logger.info(f'MAE: {mae}, MSE: {mse}')
         logger.info(f'MAPE: {mape}, R2: {r2}')
-        logger.info(f'Explained Variance: {explained_variance}')
-
-        self.get_shap(obs)
+        logger.info(f'Explained Variance: {explained_variance}')        
 
         self.results = {
             'MAE': mae,
@@ -345,7 +379,7 @@ class RLM_Models:
 
         }
         
-        return true_rewards, predicted_rewards
+        return true_rewards, predicted_rewards, total_reward
     
     def get_shap(self, obs):
         if self.settings['model_type'] == 'DQN':
@@ -358,7 +392,7 @@ class RLM_Models:
         shap_values = explainer.shap_values(obs)
         print(shap_values)
         fig = shap.summary_plot(shap_values, obs)
-        plt.savefig(self.models_dir + 'shap.png')
+        plt.savefig(f'{self.models_dir}{self.settings["model_type"]}_shap.png')
         
 
     def visualize_predictions(self):
@@ -371,8 +405,187 @@ class RLM_Models:
     def cross_validate_rlm(self):
         pass
 
-    def hp_tuning(self):
-        pass    
+    # from stable_baselines3 import PPO
+    # from torch.optim import Adam
+    # model = PPO(policy, env, verbose=2, optimizer_class=Adam, optimizer_kwargs=dict(lr=0.001))
+
+
+    def hp_tuning(self):        
+        if self.settings['optimizer_type'] == "random":
+            self.hp_tuning_random()
+        elif self.settings['optimizer_type'] == "optuna":
+            self.hp_tuning_optuna()
+        elif self.settings['optimizer_type'] == "bayesian":
+            self.hp_tuning_bayesian()
+        else:
+            raise ValueError("Unknown optimizer type")
+
+            
+    def hp_tuning_random(self):
+        # Get the parameter space for the selected model type
+        param_distributions = self.models_params[self.settings['model_type'].lower()]
+
+        # Create a ParameterSampler instance
+        param_sampler = ParameterSampler(param_distributions, n_iter=100, random_state=42)
+
+        best_score = float('inf')
+        best_params = None
+
+        for params in param_sampler:
+            # Get the model and environment with the current parameters
+            model, env = self.get_model_and_env(params)
+
+            # Train the model
+            model = self.train_rlm_model(model)
+
+            # Evaluate the model
+            true_rewards, predicted_rewards = self.evaluate_rlm_model(model, env)
+
+            # Compute a score based on your evaluation criteria (e.g., mean squared error)
+            score = mean_squared_error(true_rewards, predicted_rewards)
+
+            # Update the best score and parameters if necessary
+            if score < best_score:
+                best_score = score
+                best_params = params
+
+        # Print the best parameters
+        logger.info(f"Best Parameters: \n{best_params}")
+
+        # Save the best parameters
+        self.save_params(best_params)
+
+        model, env = self.get_model_and_env(best_params)
+        best_model = self.train_rlm_model(model)
+        self.evaluate_rlm_model(best_model, env)
+        logger.info(f"Best Model Results: \n{self.results}")
+        self.save_model(best_model)
+
+    def objective_optuna(self, trial):
+        # Get the parameter space for the selected model type
+        param_distributions = self.models_params[self.settings['model_type'].lower()]
+
+        # Create a dictionary to store the sampled parameters
+        params = {}
+        for param_name, param_values in param_distributions.items():
+            if isinstance(param_values, list):
+                params[param_name] = trial.suggest_categorical(param_name, param_values)
+            elif isinstance(param_values, tuple) and len(param_values) == 2:
+                if param_values[1] == "log-uniform":
+                    params[param_name] = trial.suggest_loguniform(param_name, *param_values[0])
+                elif param_values[1] == "uniform":
+                    params[param_name] = trial.suggest_float(param_name, *param_values[0])
+        
+        # Get the model and environment with the current parameters
+        model, env = self.get_model_and_env(params)
+
+        # Train the model
+        model = self.train_rlm_model(model)
+
+        # Evaluate the model
+        true_rewards, predicted_rewards, total_reward = self.evaluate_rlm_model(model, env)
+
+        # Compute a score based on your evaluation criteria (e.g., mean squared error)
+        score = mean_squared_error(true_rewards, predicted_rewards)
+
+        return score
+
+    def hp_tuning_optuna(self):
+        study = create_study(direction='minimize')
+        study.optimize(self.objective_optuna, n_trials=100)
+        
+        best_params = study.best_params
+        best_score = study.best_value
+
+        logger.info(f"Best Parameters: \n{best_params}")
+        logger.info(f"Best Score: {best_score}")
+
+        self.save_params(best_params)
+
+        model, env = self.get_model_and_env(best_params)
+        best_model = self.train_rlm_model(model)
+        self.evaluate_rlm_model(best_model, env)
+        logger.info(f"Best Model Results: \n{self.results}")
+        self.save_model(best_model)
+
+    def objective_bayesian(self, **params):
+        # Convert numerical values back to their original string values
+        policy_mapping = {0: 'CnnPolicy', 1: 'MlpPolicy'}
+        activation_fn_mapping = {0: 'ReLU', 1: 'Tanh'}
+        
+        params['policy'] = policy_mapping[int(params['policy'])]
+        params['policy_kwargs'] = {
+            "net_arch": [int(params['net_arch_x']), int(params['net_arch_y'])],
+            "activation_fn": activation_fn_mapping[int(params['activation_fn'])]
+        }
+
+        # Get the model and environment with the current parameters
+        model, env = self.get_model_and_env(params)
+
+        # Train the model
+        model = self.train_rlm_model(model)
+
+        # Evaluate the model
+        true_rewards, predicted_rewards, total_reward = self.evaluate_rlm_model(model, env)
+
+        # Compute a score based on your evaluation criteria
+        mse = mean_squared_error(true_rewards, predicted_rewards)
+        score = total_reward
+
+        return score
+
+    def hp_tuning_bayesian(self):        
+        param_distributions = self.models_params[self.settings['model_type'].lower()]
+        # print(param_distributions)
+
+        # Convert parameter distributions to the format expected by BayesianOptimization
+        pbounds = {}
+        policy_mapping = {'CnnPolicy': 0, 'MlpPolicy': 1}
+        activation_fn_mapping = {'ReLU': 0, 'Tanh': 1}
+        
+        for param_name, param_values in param_distributions.items():
+            if param_name == 'policy':
+                pbounds[param_name] = (0, 1)  # Assign numerical bounds for policy parameter
+            elif param_name == 'policy_kwargs':
+                pbounds['net_arch_x'] = (32, 256)  # Assign numerical bounds for net_arch x parameter
+                pbounds['net_arch_y'] = (32, 512)  # Assign numerical bounds for net_arch y parameter
+                pbounds['activation_fn'] = (0, 1)  # Assign numerical bounds for activation_fn parameter
+            elif isinstance(param_values, tuple) and len(param_values) == 2:
+                pbounds[param_name] = param_values
+            elif isinstance(param_values, list) and len(param_values) == 2:
+                if isinstance(param_values[0], tuple):
+                    pbounds[param_name] = param_values[0]
+                else:
+                    pbounds[param_name] = (min(param_values), max(param_values))
+
+        print(f'Parameter bounds: \n{pbounds}')
+        
+        optimizer = BayesianOptimization(
+            f=self.objective_bayesian,
+            pbounds=pbounds,
+            random_state=1,
+            allow_duplicate_points=True
+        )
+        optimizer.maximize(init_points=10, n_iter=90)
+
+        best_params = optimizer.max['params']
+        best_score = optimizer.max['target']
+
+        # Convert numerical values back to their original string values
+        best_params['policy'] = policy_mapping[int(best_params['policy'])]
+
+        logger.info(f"Best Parameters: \n{best_params}")
+        logger.info(f"Best Score: {best_score}")
+
+        self.save_params(best_params)
+
+        model, env = self.get_model_and_env(best_params)
+        best_model = self.train_rlm_model(model)
+        self.evaluate_rlm_model(best_model, env)
+        logger.info(f"Best Model Results: \n{self.results}")
+        self.save_model(best_model)
+
+
 
     def save_model(self, model):        
         if not os.path.exists(self.models_dir):
@@ -393,29 +606,30 @@ class RLM_Models:
         
     def run(self):
         best_params = None
+        self.get_params()
         self.data = self.fetch_or_read_data()
         if self.settings['use_hp_tuning']:
             best_params = self.hp_tuning()
         else:
             best_params = self.get_existing_best_params()
-        self.model, self.env = self.get_model_and_env(best_params)
-        self.model = self.train_rlm_model(best_params)
-        true_rewards, predicted_rewards = self.evaluate_rlm_model(self.model, self.env)
-        
-        if best_params is not None:
-            self.save_params(best_params)
-        self.save_model(self.model)   
-        
+            self.model, self.env = self.get_model_and_env(best_params)
+            self.model = self.train_rlm_model(best_params)
+            true_rewards, predicted_rewards = self.evaluate_rlm_model(self.model, self.env)
+            
+            if best_params is not None:
+                self.save_params(best_params)
+            self.save_model(self.model) 
 
 
+        
 if __name__ == '__main__':
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Reinforcement learning models training and tuning.')
     parser.add_argument('--model_type', choices=['A2C', 'DDPG', 'DQN', 'PPO', 'SAC', 'TD3'], 
                         type=str, default='A2C', help='Select model type from A2C, DDPG, DQN, PPO, SAC, TD3')
     parser.add_argument('--use_hp_tuning', type=bool, default=True, help='Use hyperparameter tuning')
-    parser.add_argument('--optimizer_type', choices=['PSO', 'random', 'bayesian', 'optuna'], 
-                                                type=str, default='PSO', help='Select optimizer type') 
+    parser.add_argument('--optimizer_type', choices=['random', 'bayesian', 'optuna'], 
+                                                type=str, default='bayesian', help='Select optimizer type') 
     parser.add_argument('--use_cross_validation', type=bool, default=False, help='Use cross-validation')    
     parser.add_argument('--use_fetched_data', type=bool, default=False, help='Use fetched data')    
     args = parser.parse_args()
@@ -435,5 +649,5 @@ if __name__ == '__main__':
         'debug': True
         
     }
-    svm_models = RLM_Models(SETTINGS)
-    svm_models.run()
+    rlm_models = RLM_Models(SETTINGS)
+    rlm_models.run()
