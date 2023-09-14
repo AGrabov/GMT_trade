@@ -60,20 +60,7 @@ class SVMModels:
         df.dropna(inplace=True)
         df = TAIndicators(df)._calculate_indicators()
         logger.info("Added TA Indicators")
-        
-        # try:
-        #     scalers = {
-        #         'standard': StandardScaler(),
-        #         'minmax': MinMaxScaler(),
-        #         'robust': RobustScaler(),
-        #         'quantile': QuantileTransformer(),
-        #         'power': PowerTransformer()
-        #     }
-        #     scaler = scalers.get(self.settings['scaler_type'])
-        #     df[df.columns] = scaler.fit_transform(df)
-        # except Exception as e:
-        #     logger.error(f"Error normalizing data: {e}")
-        
+                        
         return df
 
     def split_data(self, df):      
